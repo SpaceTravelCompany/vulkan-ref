@@ -1,0 +1,14 @@
+{
+  "name": "vulkan-ref",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node scripts/seed-content.mjs",
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs && npx --yes serve dist -l 4321"
+  },
+  "dependencies": {
+    "marked": "^18.0.2"
+  }
+}

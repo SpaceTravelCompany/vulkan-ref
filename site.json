@@ -1,0 +1,126 @@
+{
+  "title": "Vulkan Reference",
+  "subtitle": "Vulkan 정보를 주제별로 정리",
+  "sections": [
+    {
+      "id": "help",
+      "title": "문제 해결",
+      "topics": [
+        {
+          "slug": "draw-not-showing",
+          "title": "그래픽이 안 나올 때",
+          "summary": "Draw부터 Submit까지 점검 체크리스트",
+          "icon": "⚠"
+        }
+      ]
+    },
+    {
+      "id": "pipeline",
+      "title": "파이프라인",
+      "topics": [
+        {
+          "slug": "graphics-pipeline",
+          "title": "그래픽스 파이프라인",
+          "summary": "VkGraphicsPipelineCreateInfo · 셰이더 · 고정함수 상태",
+          "icon": "▶"
+        },
+        {
+          "slug": "compute-pipeline",
+          "title": "컴퓨트 파이프라인",
+          "summary": "CS 스테이지 · dispatch · workgroup",
+          "icon": "⚙"
+        },
+        {
+          "slug": "mesh-shader",
+          "title": "메시 셰이더",
+          "summary": "Task/Mesh 스테이지 · 지원 현황 · 장단점",
+          "icon": "◆"
+        }
+      ]
+    },
+    {
+      "id": "resources",
+      "title": "리소스",
+      "topics": [
+        {
+          "slug": "descriptors",
+          "title": "Descriptor & Layout",
+          "summary": "Layout → Pool → Set → Bind",
+          "icon": "⊞"
+        },
+        {
+          "slug": "memory",
+          "title": "메모리",
+          "summary": "타입 · 정렬 · 캐시 · 스테이징",
+          "icon": "▤"
+        }
+      ]
+    },
+    {
+      "id": "rendering",
+      "title": "렌더링",
+      "topics": [
+        {
+          "slug": "render-pass",
+          "title": "Render Pass & 서브패스",
+          "summary": "TBDR · Input Attachment · Dynamic Rendering",
+          "icon": "▦"
+        }
+      ]
+    },
+    {
+      "id": "sync",
+      "title": "동기화",
+      "topics": [
+        {
+          "slug": "synchronization",
+          "title": "동기화 전체",
+          "summary": "Fence · Semaphore · Event · Pipeline Barrier",
+          "icon": "⟳"
+        }
+      ]
+    },
+    {
+      "id": "engine",
+      "title": "엔진 실전",
+      "topics": [
+        {
+          "slug": "performance",
+          "title": "성능 최적화",
+          "summary": "디스크립터 · 메모리 · 커맨드 버퍼 · 체크리스트",
+          "icon": "↑"
+        },
+        {
+          "slug": "thread-safety",
+          "title": "멀티스레딩",
+          "summary": "외부 동기화 · 커맨드 풀 · 프레임 인 플라이트",
+          "icon": "⫘"
+        }
+      ]
+    },
+    {
+      "id": "extensions",
+      "title": "확장기능 (1.3~1.4)",
+      "topics": [
+        {
+          "slug": "extensions-foundation",
+          "title": "핵심 기반",
+          "summary": "Dynamic Rendering · Sync2 · 바인드리스 · Timeline",
+          "icon": "★"
+        },
+        {
+          "slug": "extensions-rendering",
+          "title": "렌더링 확장",
+          "summary": "Maintenance5 · Mesh · Dynamic State · FSR",
+          "icon": "◇"
+        },
+        {
+          "slug": "extensions-advanced",
+          "title": "고급 기능",
+          "summary": "RT · DGC · Host Copy · Swapchain · 셰이더 최적화",
+          "icon": "✦"
+        }
+      ]
+    }
+  ]
+}
