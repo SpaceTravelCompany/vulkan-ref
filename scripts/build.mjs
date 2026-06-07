@@ -68,6 +68,32 @@ function renderNav(siteData) {
     <p class="brand-sub">${escapeHtml(site.subtitle)}</p>
   </div>
   ${groups}
+  <div class="nav-reference" aria-label="Vulkan 참고 레퍼런스">
+    <p class="nav-group-label">Vulkan 참고 레퍼런스</p>
+    <div class="reference-links">
+      <a class="reference-link" href="https://docs.vulkan.org/refpages/latest/" target="_blank" rel="noopener noreferrer">
+        <span class="reference-link-mark" aria-hidden="true">↗</span>
+        <span class="reference-link-label">Vulkan Reference</span>
+      </a>
+      <a class="reference-link" href="https://www.howtovulkan.com/" target="_blank" rel="noopener noreferrer">
+        <span class="reference-link-mark" aria-hidden="true">↗</span>
+        <span class="reference-link-label">How to Vulkan</span>
+      </a>
+      <a class="reference-link" href="https://vulkan.gpuinfo.org/" target="_blank" rel="noopener noreferrer">
+        <span class="reference-link-mark" aria-hidden="true">↗</span>
+        <span class="reference-link-label">Vulkan Hardware Database</span>
+      </a>
+      <a class="reference-link" href="https://vulkan.lunarg.com/sdk/home" target="_blank" rel="noopener noreferrer">
+        <span class="reference-link-mark" aria-hidden="true">↗</span>
+        <span class="reference-link-label">LunarG Vulkan SDK</span>
+      </a>
+    </div>
+  </div>
+  <div class="nav-license" aria-label="라이선스">
+    <a class="cc-badge" href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank" rel="license noopener noreferrer" title="문서/콘텐츠: CC BY-NC-SA 4.0">
+      <img class="cc-badge-img" src="assets/cc-by-nc-sa.svg" alt="CC BY-NC-SA 4.0">
+    </a>
+  </div>
 </nav>`;
 }
 
@@ -158,7 +184,7 @@ function renderPage(siteData) {
 async function copyAssets() {
   const dest = path.join(distDir, "assets");
   await fs.mkdir(dest, { recursive: true });
-  for (const file of ["main.css", "prism.css", "prism.js", "app.js", "favicon.svg"]) {
+  for (const file of ["main.css", "prism.css", "prism.js", "app.js", "favicon.svg", "cc-by-nc-sa.svg"]) {
     await fs.copyFile(path.join(assetsDir, file), path.join(dest, file));
   }
 }

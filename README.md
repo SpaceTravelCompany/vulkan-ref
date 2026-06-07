@@ -44,3 +44,11 @@ npm run dev    # 빌드 후 로컬 서버 (http://localhost:4321)
 - `lib/` — compose · 마크다운 · cmdstack · relflow
 - `assets/` — 스타일, prism, 클라이언트 스크립트
 - `dist/` — `index.html` + `assets/`
+
+## 라이선스
+
+- 사이트 코드: [MIT License](LICENSE-CODE)
+- 문서/콘텐츠: [CC BY-NC-SA 4.0](LICENSE-CONTENT)
+- 전체 정책: [LICENSE](LICENSE)
+
+`dist/`는 생성물이라 코드와 문서가 섞여 있다. JS/CSS/빌드 코드 부분은 MIT이고, 포함된 문서 내용은 CC BY-NC-SA 4.0이다.
