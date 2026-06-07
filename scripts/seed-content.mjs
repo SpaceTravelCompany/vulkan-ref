@@ -149,6 +149,7 @@ const OUTPUT_SLUGS = [
   "descriptors",
   "memory",
   "render-pass",
+  "dynamic-rendering",
   "synchronization",
   "performance",
   "thread-safety",
@@ -171,6 +172,11 @@ async function readPostBody(id) {
 
 async function readPostSections(id) {
   return parseBodySections(await readPostBody(id));
+}
+
+async function readExistingTopicBody(slug) {
+  const raw = await fs.readFile(path.join(contentDir, `${slug}.md`), "utf-8");
+  return raw.replace(/^---[\s\S]*?---\s*/, "").trim();
 }
 
 function introOf(sections) {
@@ -217,6 +223,7 @@ async function main() {
     readPostSections("4"),
     readPostSections("30"),
   ]);
+  const dynamicRenderingBody = await readExistingTopicBody("dynamic-rendering");
 
   const topics = {
     "draw-not-showing": {
@@ -227,7 +234,10 @@ async function main() {
       title: "그래픽스 파이프라인",
       body: composeFromSections([
         filterSections(graphics, {
-          exclude: [{ excludes: "Mesh Shader Pipeline" }],
+          exclude: [
+            { excludes: "Dynamic Rendering" },
+            { excludes: "Mesh Shader Pipeline" },
+          ],
         }),
       ]),
     },
@@ -260,6 +270,10 @@ async function main() {
           include: [{ startsWith: "1. 렌더 패스" }],
         }),
       ]),
+    },
+    "dynamic-rendering": {
+      title: "Dynamic Rendering",
+      body: dynamicRenderingBody,
     },
     synchronization: {
       title: "동기화 전체",

@@ -7,7 +7,7 @@ slug: extensions-rendering
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
 
-### 왜 필수인가
+### 용도
 
 - `VkPipelineCreateFlags2` (64비트 파이프라인 플래그)
 - `VkBufferUsageFlags2` (64비트 버퍼 사용 플래그)
@@ -59,7 +59,7 @@ VkBufferUsageFlags2CreateInfo bufferUsage2 = {
 
 > **차세대 지오메트리 파이프라인 | NVIDIA Ada+, AMD RDNA3+, Intel Arc+**
 
-### 왜 필수인가
+### 용도
 
 - **Task Shader** + **Mesh Shader**로 기존 정점 파이프라인 대체
 - 정점 페치, VS, TS, GS, PA를 **프로그래머블**하게 통합
@@ -179,7 +179,7 @@ void main() {
 
 > **Vulkan 1.3 코어 승격 (부분) | 파이프라인 최소화에 필수**
 
-### 왜 필수인가
+### 용도
 
 - 파이프라인 객체 수를 획기적으로 감소
 - Cull Mode, Front Face, Primitive Topology 등을 **동적으로 변경**
@@ -243,7 +243,7 @@ vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_GREATER);
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
 
-### 왜 필수인가
+### 용도
 
 - 동적 렌더링에서 **서브패스 로컬 읽기** (Input Attachment) 기능 제공
 - `VK_RENDERING_CONTENTS_INPUT_ATTACHMENT_READ_BIT_KHR` 플래그로 동일 렌더패스 내 텍스처 읽기
@@ -277,7 +277,7 @@ VkRenderingInputAttachmentIndexInfo inputInfo = {
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
 
-### 왜 필수인가
+### 용도
 
 - `VK_ATTACHMENT_LOAD_OP_NONE` — 첨부 내용을 유지하면서 로드 동기화 생략
 - `VK_ATTACHMENT_STORE_OP_NONE` — 첨부 내용을 보존하면서 스토어 동기화 생략
@@ -304,7 +304,7 @@ VkRenderingAttachmentInfo attachment = {
 
 > **Roadmap 2026 필수 | 가변 해상도 셰이딩**
 
-### 왜 필수인가
+### 용도
 
 - 화면 영역별로 **다른 셰이딩 레이트** 적용 (1x1, 1x2, 2x1, 2x2, 4x4...)
 - 시선 집중 영역은 고해상도, 주변부는 저해상도

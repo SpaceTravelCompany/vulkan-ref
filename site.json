@@ -63,8 +63,14 @@
         {
           "slug": "render-pass",
           "title": "Render Pass & 서브패스",
-          "summary": "TBDR · Input Attachment · Dynamic Rendering",
+          "summary": "TBDR · Input Attachment · 서브패스",
           "icon": "▦"
+        },
+        {
+          "slug": "dynamic-rendering",
+          "title": "Dynamic Rendering",
+          "summary": "vkCmdBeginRendering · 포맷 계약 · 레이아웃 전환",
+          "icon": "▣"
         }
       ]
     },

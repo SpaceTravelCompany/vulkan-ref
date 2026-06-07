@@ -240,7 +240,7 @@ std::mutex mtx;
 
 2. `Host access to the VkCommandPool that commandBuffer was allocated from must be externally synchronized`
    - 커맨드 버퍼를 할당한 **VkCommandPool도 동시에 건드리면 안 됨**
-   - 왜? 드라이버가 내부적으로 CommandPool 단위로 상태를 관리함. 같은 Pool에서 할당된 다른 커맨드 버퍼가 다른 스레드에서 기록 중이어도 영향을 줄 수 있음
+   - 이유 드라이버가 내부적으로 CommandPool 단위로 상태를 관리함. 같은 Pool에서 할당된 다른 커맨드 버퍼가 다른 스레드에서 기록 중이어도 영향을 줄 수 있음
 
 **즉, 같은 CommandPool에서 할당된 모든 커맨드 버퍼는 동시에 사용할 수 없다.**
 
@@ -291,7 +291,7 @@ Validation Layer가 "이건 동기화 문제야"라고 친절히 알려주기도
 
 한 가지 자주 실수하는 부분: 같은 `VkFence`를 CPU 쪽에서 여러 스레드가 동시에 `vkResetFences` / `vkGetFenceStatus` 하면 data race다.
 
-> **왜?** Fence는 GPU 작업 완료 신호를 관리하는 객체다. 한 스레드가 "완료 확인 → 리셋"을 하는 동안 다른 스레드가 제출하면, Fence 상태가 꼬여서 CPU가 영원히 기다리거나 잘못된 시점에 진행될 수 있다.
+> **이유** Fence는 GPU 작업 완료 신호를 관리하는 객체다. 한 스레드가 "완료 확인 → 리셋"을 하는 동안 다른 스레드가 제출하면, Fence 상태가 꼬여서 CPU가 영원히 기다리거나 잘못된 시점에 진행될 수 있다.
 
 ```c
 // Bad: 같은 fence를 두 스레드에서 리셋

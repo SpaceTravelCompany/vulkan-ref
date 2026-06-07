@@ -158,7 +158,7 @@ vkCreatePipelineLayout(device, &plCI, nullptr, &pipelineLayout);
 
 실제 descriptor set을 할당하려면 먼저 descriptor pool이 필요하다.
 
-> **비유**: Descriptor Pool은 "책상"이고, Descriptor Set은 그 위에 놓인 "작업 공간"이다. 풀을 먼저 만들어야 그 안에서 작업 공간을 할당받을 수 있다.
+Descriptor Pool은 descriptor set이 사용할 **descriptor 저장 공간을 미리 확보한 할당 풀**이다. `maxSets`로 만들 수 있는 set 개수를 정하고, `VkDescriptorPoolSize`로 set 내부에 들어갈 descriptor 타입별 총량을 잡아둔다. Descriptor Set은 그 pool에서 할당된 실제 바인딩 묶음이다.
 
 ```c
 VkDescriptorPoolSize poolSizes[2] = {};

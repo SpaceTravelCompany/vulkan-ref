@@ -72,7 +72,23 @@ vkGetPhysicalDeviceProperties(physDev, &props);
 - **Linear tiling**: 행 단위로 정렬. CPU에서 직접 접근 가능하지만 성능이 낮음.
 - **Optimal tiling**: alignment가 하드웨어 최적화되어 있음. GPU 전용.
 
-같은 생성 파라미터(flags, imageType, format, extent, mipLevels, arrayLayers, samples, tiling, usage)로 만들어진 이미지들은 **동일한 alignment**를 가진다 (maintenance4 feature 필요).
+`maintenance4` feature가 활성화되어 있으면, 같은 `VkImageCreateInfo` 핵심 파라미터로 만든 이미지들은 `VkMemoryRequirements::alignment`가 항상 같다.
+
+여기서 비교 대상은 다음 멤버들이다:
+
+- `flags`
+- `imageType`
+- `format`
+- `extent`
+- `mipLevels`
+- `arrayLayers`
+- `samples`
+- `tiling`
+- `usage`
+
+즉 위 값들이 모두 같은 이미지 A/B를 만들고 각각 `vkGetImageMemoryRequirements`를 호출하면, 반환된 `alignment`는 같은 값이어야 한다. 이 보장은 이미지별로 매번 다른 alignment가 나올 수 있다고 가정하지 않아도 되게 해주므로, 같은 종류의 이미지를 많이 할당하는 allocator에서 alignment를 캐시하기 좋다.
+
+단, 이 말은 `size`나 `memoryTypeBits`까지 항상 같다는 뜻은 아니다. 여기서 명확히 보장하는 것은 **alignment 동일성**이다.
 
 ---
 
@@ -340,7 +356,7 @@ vkDestroyBuffer(device, stagingBuffer, nullptr);
 
 하나의 `VkDeviceMemory`에 버퍼와 이미지를 **같이 넣을 때**는 `bufferImageGranularity` 제약이 있다.
 
-> **왜?** GPU 하드웨어마다 버퍼와 이미지를 메모리에 배치하는 방식이 다르다. 이 둘을 섞어 놓으면 성능이 떨어질 수 있어서, GPU가 정한 정렬 단위를 지키라고 요구한다.
+> **이유** GPU 하드웨어마다 버퍼와 이미지를 메모리에 배치하는 방식이 다르다. 이 둘을 섞어 놓으면 성능이 떨어질 수 있어서, GPU가 정한 정렬 단위를 지키라고 요구한다.
 
 ```c
 // VkPhysicalDeviceLimits::bufferImageGranularity
