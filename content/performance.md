@@ -127,11 +127,11 @@ VR 양안을 **단일 렌더 패스**에서 처리. View Mask와 `VK_DEPENDENCY_
 ## 8. 최적화 체크리스트
 
 - Pipeline Cache 디스크 저장/불러오기
-- [x] Dedicated Allocation 권장 리소스 확인
-- [x] Descriptor Pool 프레임별 리셋
+- Dedicated Allocation 권장 리소스 확인
+- Descriptor Pool 프레임별 리셋
 - Dynamic Uniform Buffer로 오브젝트별 데이터
 - Push Constants로 작은 상수 전달
 - Indirect Drawing + GPU 컬링
-- [x] Pipeline Barrier 최소화 (stage mask 좁게)
+- Pipeline Barrier 최소화 (stage mask 좁게)
 - Render Pass 호환 Framebuffer 재사용
 - Secondary Command Buffer 멀티스레딩

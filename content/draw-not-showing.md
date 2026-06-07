@@ -3,12 +3,6 @@ title: 그래픽이 안 나올 때
 slug: draw-not-showing
 ---
 
-원문 메모: vkCmdDraw의 **instanceCount는 최소 1**이어야 한다. 인스턴싱을 쓰지 않아도 1로 설정해야 화면에 그려진다.
-
-vkCmdDraw 계열을 호출했는데 화면이 비어 있을 때, 아래 순서대로 점검한다. 대부분은 **렌더 패스·파이프라인·버텍스·디스크립터** 중 하나가 빠졌거나, **instanceCount가 0**인 경우다.
-
----
-
 ## 1. Draw 파라미터
 
 `vkCmdDraw`, `vkCmdDrawIndexed` 등에서 **instanceCount는 최소 1**이어야 한다. 인스턴싱을 쓰지 않더라도 1로 설정해야 화면에 그려진다.

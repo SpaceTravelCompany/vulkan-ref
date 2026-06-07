@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderMarkdown } from "../lib/markdown.js";
 import { splitMarkdownByH2 } from "../lib/sections.js";
+import { escapeHtml, slugify } from "../lib/html.js";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const distDir = path.join(root, "dist");
@@ -10,24 +11,6 @@ const contentDir = path.join(root, "content");
 const assetsDir = path.join(root, "assets");
 
 const site = JSON.parse(await fs.readFile(path.join(root, "site.json"), "utf-8"));
-
-function escapeHtml(value = "") {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function slugify(text) {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\u3131-\uD79D\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 80) || "section";
-}
 
 function parseFrontmatter(raw) {
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -47,10 +30,11 @@ function buildTopicSections(body) {
 
   return chunks.map((chunk) => {
     const { html } = renderMarkdown(chunk.lines.join("\n").trim());
-    let id = slugify(chunk.title);
+    const baseId = slugify(chunk.title, { maxLength: 80 });
+    let id = baseId;
     let n = 2;
     while (usedIds.has(id)) {
-      id = `${slugify(chunk.title)}-${n++}`;
+      id = `${baseId}-${n++}`;
     }
     usedIds.add(id);
     return { id, title: chunk.title, html };
@@ -89,13 +73,16 @@ function renderNav(siteData) {
 
 async function buildSiteData() {
   const slugs = [...new Set(site.sections.flatMap((s) => s.topics.map((t) => t.slug)))];
+  const topicMetaBySlug = new Map(
+    site.sections.flatMap((section) => section.topics.map((topic) => [topic.slug, topic])),
+  );
 
   const topics = {};
 
   for (const slug of slugs) {
     const raw = await fs.readFile(path.join(contentDir, `${slug}.md`), "utf-8");
     const { meta, body } = parseFrontmatter(raw);
-    const metaTopic = site.sections.flatMap((s) => s.topics).find((t) => t.slug === slug);
+    const metaTopic = topicMetaBySlug.get(slug);
 
     topics[slug] = {
       title: meta.title || slug,
@@ -118,6 +105,7 @@ function renderPage(siteData) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeHtml(site.title)}</title>
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
   <script>
     (function () {
       var key = "vulkan-ref-theme";
@@ -170,7 +158,7 @@ function renderPage(siteData) {
 async function copyAssets() {
   const dest = path.join(distDir, "assets");
   await fs.mkdir(dest, { recursive: true });
-  for (const file of ["main.css", "prism.css", "prism.js", "app.js"]) {
+  for (const file of ["main.css", "prism.css", "prism.js", "app.js", "favicon.svg"]) {
     await fs.copyFile(path.join(assetsDir, file), path.join(dest, file));
   }
 }

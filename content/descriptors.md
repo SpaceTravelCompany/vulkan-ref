@@ -279,23 +279,57 @@ vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
 
 ## 8. Update-After-Bind (Vulkan 1.2 / VK_EXT_descriptor_indexing)
 
-기본적으로 descriptor set은 **bind 이후에 업데이트해도 반영되지 않는다**.
+기본 규칙은 "bind 이후 업데이트가 조용히 무시된다"가 아니다. 일반 descriptor binding에서는 command buffer에 set을 bind한 뒤 그 set의 descriptor를 다시 쓰면, 이미 기록된 command buffer가 invalid 될 수 있고 GPU가 아직 쓰는 중인 set도 건드리면 안 된다.
 
-> **이유** GPU는 바인딩 시점에 리소스 주소를 고정해서 최적화한다. 나중에 내용이 바뀌면 GPU가 이미 읽은 정보가 달라져서 문제가 생길 수 있다.
+그래서 기본 모델은 이렇게 생각하면 된다:
 
-`VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT`를 사용하면 바인딩 후에도 descriptor를 업데이트할 수 있다. `VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT`를 사용하면 바인딩 후에도 descriptor를 업데이트할 수 있다.
+- `vkCmdBindDescriptorSets`로 set을 command buffer에 기록한다
+- 그 command buffer가 실행을 끝낼 때까지, 해당 set의 descriptor 내용은 고정된 것으로 취급한다
+- 다른 리소스로 바꾸고 싶으면 보통 다른 descriptor set을 쓰거나, GPU 사용이 끝난 뒤 업데이트한다
+
+> **헷갈리기 쉬운 점** 여기서 말하는 업데이트는 `VkBuffer`, `VkImageView`, `VkSampler` 같은 descriptor 슬롯의 연결 대상을 바꾸는 것이다. 이미 연결된 buffer 안의 데이터를 mapped memory나 copy 명령으로 바꾸는 건 별도의 메모리 동기화 문제다.
+
+`Update-After-Bind`는 이 규칙을 완화하는 옵션이다. 해당 binding에 `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`를 주면, set을 command buffer에 bind한 뒤 submit 전에 descriptor를 다시 써도 command buffer가 invalid 되지 않고, submit 시점에는 가장 최근에 쓴 descriptor가 사용된다.
+
+설정은 네 군데가 맞아야 한다:
+
+- 디바이스 feature: descriptor 타입에 맞는 `descriptorBinding*UpdateAfterBind` 활성화
+- set layout: `VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT`
+- binding flag: `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`
+- descriptor pool: `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT`
 
 ```c
-// layout 생성 시 flag 설정
-VkDescriptorSetLayoutCreateInfo dslCI{};
-dslCI.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+VkDescriptorSetLayoutBinding binding{};
+binding.binding = 0;
+binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+binding.descriptorCount = 1024;
+binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-// pool 생성 시에도 flag 설정
+VkDescriptorBindingFlags bindingFlags[] = {
+    VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
+};
+
+VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsCI{};
+bindingFlagsCI.sType =
+    VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+bindingFlagsCI.bindingCount = 1;
+bindingFlagsCI.pBindingFlags = bindingFlags;
+
+// layout 생성 시 update-after-bind pool flag와 binding flag를 같이 설정
+VkDescriptorSetLayoutCreateInfo dslCI{};
+dslCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+dslCI.pNext = &bindingFlagsCI;
+dslCI.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+dslCI.bindingCount = 1;
+dslCI.pBindings = &binding;
+
+// pool 생성 시에도 update-after-bind flag 설정
 VkDescriptorPoolCreateInfo poolCI{};
+poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 ```
 
-이를 사용하면 매 프레임마다 set을 다시 할당하지 않고, 바인딩한 set의 내용만 교체할 수 있다. 단, 드라이버가 해당 리소스를 추적해야 하므로 성능 trade-off가 있을 수 있다.
+이를 사용하면 매번 새 set을 할당하지 않고, 큰 descriptor 배열의 일부 슬롯만 나중에 채우거나 교체하는 바인드리스 패턴을 만들 수 있다. 단, GPU가 이미 실행 중인 작업에서 같은 descriptor를 읽고 있을 수 있으므로 frame-in-flight, fence, timeline semaphore 같은 동기화 설계는 여전히 필요하다. 드라이버가 더 유연한 descriptor 추적을 해야 해서 성능 trade-off도 생길 수 있다.
 
 ---
 

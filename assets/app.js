@@ -7,7 +7,6 @@
   const mainPanel = document.getElementById("main-panel");
   const eyebrowEl = document.getElementById("topic-eyebrow");
   const sectionTitleEl = document.getElementById("section-title");
-  const tabsWrapEl = document.getElementById("section-tabs-wrap");
   const tabsEl = document.getElementById("section-tabs");
   const tabsToggleBtn = document.getElementById("tabs-toggle");
   const viewportEl = document.getElementById("content-viewport");
@@ -17,6 +16,7 @@
   const navPanel = document.querySelector(".nav-panel");
   const navToggle = document.getElementById("nav-toggle");
   const navBackdrop = document.getElementById("nav-backdrop");
+  const topicBtns = [...document.querySelectorAll(".topic-btn")];
 
   const TABS_KEY = "vulkan-ref-tabs-visible";
   const THEME_KEY = "vulkan-ref-theme";
@@ -27,6 +27,7 @@
   let currentTopic = defaultTopic;
   let currentSection = 0;
   let tabsVisible = localStorage.getItem(TABS_KEY) !== "false";
+  let renderedTabsTopic = null;
 
   function getTheme() {
     return document.documentElement.dataset.theme === "light" ? "light" : "dark";
@@ -89,7 +90,7 @@
   }
 
   function setActiveNav() {
-    document.querySelectorAll(".topic-btn").forEach((btn) => {
+    topicBtns.forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.topic === currentTopic);
     });
   }
@@ -98,17 +99,19 @@
     const topic = topics[currentTopic];
     if (!topic) return;
 
-    tabsEl.innerHTML = topic.sections
-      .map((sec, i) => {
-        const active = i === currentSection ? " active" : "";
-        return `<button type="button" class="section-tab${active}" role="tab" aria-selected="${i === currentSection}" data-index="${i}">${escapeHtml(sec.title)}</button>`;
-      })
-      .join("");
+    if (renderedTabsTopic !== currentTopic) {
+      tabsEl.innerHTML = topic.sections
+        .map((sec, i) => {
+          return `<button type="button" class="section-tab" role="tab" aria-selected="false" data-index="${i}">${escapeHtml(sec.title)}</button>`;
+        })
+        .join("");
+      renderedTabsTopic = currentTopic;
+    }
 
-    tabsEl.querySelectorAll(".section-tab").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        showSection(Number(btn.dataset.index));
-      });
+    tabsEl.querySelectorAll(".section-tab").forEach((btn, i) => {
+      const active = i === currentSection;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", String(active));
     });
   }
 
@@ -164,8 +167,15 @@
       .replaceAll(">", "&gt;");
   }
 
-  document.querySelectorAll(".topic-btn").forEach((btn) => {
+  topicBtns.forEach((btn) => {
     btn.addEventListener("click", () => showTopic(btn.dataset.topic));
+  });
+
+  tabsEl.addEventListener("click", (e) => {
+    if (!(e.target instanceof Element)) return;
+    const btn = e.target.closest(".section-tab");
+    if (!btn || !tabsEl.contains(btn)) return;
+    showSection(Number(btn.dataset.index));
   });
 
   tabsToggleBtn.addEventListener("click", () => setTabsVisible(!tabsVisible));
