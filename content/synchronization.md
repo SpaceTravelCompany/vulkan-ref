@@ -670,7 +670,7 @@ Vulkan 1.3에서 core로 승격된 `VK_KHR_synchronization2`는 배리어 API를
 
 ### `vkCmdPipelineBarrier2` + `VkDependencyInfo`
 
-레거시 `vkCmdPipelineBarrier`는 인자가 9개라서 실수하기 쉽다. 새 API는 `VkDependencyInfo` 하나로 싼다.
+레거시 `vkCmdPipelineBarrier`는 인자가 9개라서 실수하기 쉽다. 새 API는 `VkDependencyInfo` 하나로 쓴다.
 
 ```c
 // 레거시 (Vulkan 1.0)
