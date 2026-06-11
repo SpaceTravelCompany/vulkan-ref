@@ -37,6 +37,12 @@
           "title": "Validation & Debug",
           "summary": "VK_EXT_debug_utils · 검증 레이어 · 객체 이름 · 라벨",
           "icon": "🔍"
+        },
+        {
+          "slug": "object-lifetime",
+          "title": "객체 수명 & 파괴 순서",
+          "summary": "vkDestroy* 규칙 · 자식 먼저 파괴 · DeviceWaitIdle",
+          "icon": "⌛"
         }
       ]
     },
@@ -93,6 +99,24 @@
           "icon": "◐"
         },
         {
+          "slug": "push-constants",
+          "title": "Push Constants",
+          "summary": "VkPushConstantRange · vkCmdPushConstants · maxPushConstantsSize",
+          "icon": "↣"
+        },
+        {
+          "slug": "uniform-and-storage-buffers",
+          "title": "Uniform & Storage Buffer",
+          "summary": "UBO · SSBO · Dynamic offset · Texel · Inline uniform",
+          "icon": "▭"
+        },
+        {
+          "slug": "sparse-resources",
+          "title": "Sparse Resources",
+          "summary": "SPARSE_BINDING · Residency · Mip-tail · vkQueueBindSparse",
+          "icon": "▩"
+        },
+        {
           "slug": "memory",
           "title": "메모리",
           "summary": "타입 · 정렬 · 캐시 · 스테이징",
@@ -110,7 +134,12 @@
           "summary": "VkSwapchainKHR · Acquire · Present · Recreate · PresentMode",
           "icon": "⇌"
         },
-
+        {
+          "slug": "wsi-surface",
+          "title": "Windowing / Surface",
+          "summary": "VK_KHR_surface · Win32/XCB/Wayland · VK_KHR_headless_surface",
+          "icon": "▢"
+        },
         {
           "slug": "render-pass",
           "title": "Render Pass & 서브패스",
@@ -141,6 +170,12 @@
       "id": "engine",
       "title": "엔진 실전",
       "topics": [
+        {
+          "slug": "command-buffers",
+          "title": "Command Buffer 관리",
+          "summary": "VkCommandPool · Primary/Secondary · Reset · One-time submit",
+          "icon": "⌘"
+        },
         {
           "slug": "performance",
           "title": "성능 최적화",
