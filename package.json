@@ -5,11 +5,10 @@
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
-    "seed": "node scripts/seed-content.mjs",
-    "build": "node scripts/build.mjs",
-    "dev": "node scripts/build.mjs && npx --yes serve dist -l 4321"
+    "build": "topic-pages build",
+    "dev": "npm run build && npx --yes serve dist -l 4321"
   },
   "dependencies": {
-    "marked": "^18.0.2"
+    "topic-pages": "github:SpaceTravelCompany/topic-pages#main"
   }
 }

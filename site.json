@@ -1,6 +1,26 @@
 {
   "title": "Vulkan Reference",
   "subtitle": "Vulkan 정보를 주제별로 정리",
+  "brandMark": "Vk",
+  "storagePrefix": "vulkan-ref",
+  "references": [
+    {
+      "label": "Vulkan Reference",
+      "href": "https://docs.vulkan.org/refpages/latest/"
+    },
+    {
+      "label": "How to Vulkan",
+      "href": "https://www.howtovulkan.com/"
+    },
+    {
+      "label": "Vulkan Hardware Database",
+      "href": "https://vulkan.gpuinfo.org/"
+    },
+    {
+      "label": "LunarG Vulkan SDK",
+      "href": "https://vulkan.lunarg.com/sdk/home"
+    }
+  ],
   "sections": [
     {
       "id": "help",
@@ -47,6 +67,12 @@
           "title": "Descriptor & Layout",
           "summary": "Layout → Pool → Set → Bind",
           "icon": "⊞"
+        },
+        {
+          "slug": "buffers-and-images",
+          "title": "버퍼 & 이미지",
+          "summary": "VkBuffer · VkImage · ImageView · 생성·복사·주의사항",
+          "icon": "▥"
         },
         {
           "slug": "memory",
