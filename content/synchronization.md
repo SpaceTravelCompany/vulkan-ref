@@ -432,56 +432,8 @@ vkCmdPipelineBarrier(cmdBuffer,
 
 ---
 
-## 소개
 
-Vulkan에서 **파이프라인 배리어**는 GPU 명령 사이의 **메모리·실행 순서**를 보장하는 동기화 장치다.
-
----
-
----
-
-## 1. 왜 필요한가
-
-GPU는 다음을 동시에 한다.
-
-- **파이프라인 스테이지**가 겹쳐서 실행됨 (예: 이전 드로우의 프래그먼트가 돌아가는 동안 다음 드로우의 버텍스가 시작될 수 있음)
-- **캐시** 때문에, "쓴 값"이 곧바로 "다음 읽기"에 보이지 않을 수 있음
-- **이미지 레이아웃**이 스테이지/용도마다 다름 (예: 전송용 vs 셰이더 샘플링용)
-
-그래서 "여기까지 쓴 작업이 끝난 뒤, 여기부터 읽기/쓰기를 시작해라"를 명시해 주어야 한다. 그걸 **배리어**로 표현한다.
-
----
-
----
-
-## 2. 함수 시그니처 (개념)
-
-```
-vkCmdPipelineBarrier(
-    commandBuffer,           // 명령을 넣을 커맨드 버퍼
-    srcStageMask,           // 이 스테이지들(포함)의 작업이 끝날 때까지 기다림
-    dstStageMask,           // 이 스테이지들의 작업은 배리어를 지난 뒤에만 실행됨
-    dependencyFlags,        // 배리어 간 의존성 옵션
-    memoryBarrierCount,     // 전역 메모리 배리어 개수
-    pMemoryBarriers,        // 전역 메모리 배리어 배열
-    bufferMemoryBarrierCount,
-    pBufferMemoryBarriers,  // 특정 버퍼만 대상
-    imageMemoryBarrierCount,
-    pImageMemoryBarriers    // 특정 이미지만 대상 (+ 레이아웃 전환)
-);
-```
-
-- **스테이지 마스크**: "어디까지 끝나야 배리어를 통과하는지(src)" / "배리어 통과 후 어디부터 실행해도 되는지(dst)"를 **파이프라인 스테이지** 단위로 지정.
-- **배리어 종류**:
-  - **MemoryBarrier**: 모든 메모리(전역).
-  - **BufferMemoryBarrier**: 특정 버퍼 구간만.
-  - **ImageMemoryBarrier**: 특정 이미지(+ 서브리소스) + **이미지 레이아웃 전환**.
-
----
-
----
-
-## 3. 파이프라인 스테이지 (Pipeline Stage)
+## 6. 파이프라인 스테이지 (Pipeline Stage)
 
 작업이 "어느 단계"에 해당하는지 구분하는 비트 플래그다. 배리어는 다음 두 가지로 동기화한다.
 
@@ -514,7 +466,7 @@ vkCmdPipelineBarrier(
 
 ---
 
-## 3.1 VkPipelineStageFlagBits - 각 비트 상세
+## 7. VkPipelineStageFlagBits — 각 비트 상세
 
 `VkPipelineStageFlagBits`는 위 스테이지 마스크를 구성하는 **개별 비트**다. 여러 비트를 OR해서 `VkPipelineStageFlags`(비트셋)로 넘긴다.
 
@@ -594,7 +546,7 @@ TOP_OF_PIPE
 
 ---
 
-## 4. 액세스 마스크 (Access Mask)
+## 8. 액세스 마스크 (Access Mask)
 
 "어떤 종류의 읽기/쓰기"를 보장할지 지정한다. **MemoryBarrier / BufferMemoryBarrier / ImageMemoryBarrier** 모두 `srcAccessMask`, `dstAccessMask`를 가진다.
 
@@ -633,7 +585,7 @@ TOP_OF_PIPE
 
 ---
 
-## 5. dependencyFlags
+## 9. dependencyFlags
 
 - `VK_DEPENDENCY_BY_REGION_BIT`: 픽셀/영역 단위로 의존성(같은 영역만 동기화). 렌더 패스 내부에서 자주 씀.
 - `VK_DEPENDENCY_VIEW_LOCAL_BIT` 등: 멀티뷰/렌더 패스에서 사용.
@@ -643,7 +595,7 @@ TOP_OF_PIPE
 
 ---
 
-## 6. 렌더 패스 내부 배리어
+## 10. 렌더 패스 내부 배리어
 
 `vkCmdPipelineBarrier`를 렌더 패스 안(`vkCmdBeginRenderPass` ~ `vkCmdEndRenderPass` 사이)에서 호출할 때는 여러 제약이 따른다.
 
@@ -664,7 +616,7 @@ TOP_OF_PIPE
 
 ---
 
-## 7. VK_KHR_synchronization2 (Vulkan 1.3)
+## 11. VK_KHR_synchronization2 (Vulkan 1.3)
 
 Vulkan 1.3에서 core로 승격된 `VK_KHR_synchronization2`는 배리어 API를 더 간결하고 안전하게 개선했다.
 
@@ -742,7 +694,7 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 
 ---
 
-## 6. 뭐부터 써야 하지? — 실전 선택 가이드
+## 12. 뭐부터 써야 하지? — 실전 선택 가이드
 
 처음 Vulkan을 배우면 "어떤 동기화를 써야 하지?"가 가장 어려운 질문이다. 다음은 자주 묻는 상황별 정리다:
 
@@ -757,7 +709,7 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 
 ---
 
-## 7. 비교 한눈에
+## 13. 비교 한눈에
 
 | 프리미티브 | 동기화 범위 | 세밀도 |
 |-----------|------------|--------|
@@ -781,7 +733,7 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 
 ---
 
-## 8. 타임라인 예제 (Triple Buffering + Swapchain)
+## 14. 타임라인 예제 (Triple Buffering + Swapchain)
 
 ```cmdstack
 CPU: Frame N 제출 → Fence[N] 대기 → Frame N+1 제출 → ...
@@ -801,7 +753,7 @@ Fence: f[N]↑, f[N+1]↑, ...
 
 ---
 
-## 배리어 최적화 팁
+## 15. 배리어 최적화 팁
 
 배리어는 **필요한 만큼만** 쓴다. 과도한 배리어는 GPU 스톨을 만든다.
 

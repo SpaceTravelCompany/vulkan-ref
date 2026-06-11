@@ -1,5 +1,5 @@
 ---
-title: 확장기능 — 렌더링
+title: 렌더링 확장
 slug: extensions-rendering
 ---
 

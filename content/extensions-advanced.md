@@ -1,5 +1,5 @@
 ---
-title: 확장기능 — 고급
+title: 고급 기능
 slug: extensions-advanced
 ---
 
@@ -97,7 +97,7 @@ vkUnmapMemory2KHR(device, &unmapInfo);
 - CPU 개입 없이 간접 명령 버퍼 작성
 - `vkCmdExecuteGeneratedCommandsEXT`로 GPU 생성 명령 실행
 - 수만 개의 드로우 콜을 CPU 없이 처리
-- D3D12 Work Graphs / Execute Indirect과 동등
+- D3D12 ExecuteIndirect와 동등
 
 ### 의존성
 

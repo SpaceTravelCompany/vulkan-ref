@@ -10,10 +10,20 @@ Vulkan API 참조 사이트. 빌더는 [`topic-pages`](https://github.com/SpaceT
 cd vulkan-ref
 npm install         # topic-pages 의존성 설치
 npm run build       # dist/ 정적 HTML 생성
-npm run dev         # 빌드 후 로컬 서버 (http://localhost:4321)
 ```
 
 `dist/index.html` 하나로 동작하는 **단일 페이지 앱**이다.
+
+### 개발 워크플로우 (자동 새로고침)
+
+VSCode의 [Live Server 확장](https://marketplace.visualstudio.com/items?itemName=ritwickdey.LiveServer)을 사용한다:
+
+1. `npm run build`로 `dist/`를 한 번 빌드
+2. VSCode에서 `dist/index.html`을 우클릭 → **Open with Live Server** 선택
+3. 브라우저가 `http://127.0.0.1:5500` 등으로 열림
+4. `content/*.md` 또는 `site.json` 수정 후 `npm run build` 다시 실행 → 브라우저 자동 새로고침
+
+빌드 + 서빙 + 워치 + 재빌드를 한 번에 하려면 `topic-pages dev`도 가능하지만, 추가 의존성(`live-server` + transitives ~190개)이 필요하다. 이 프로젝트는 가벼움을 우선해 VSCode 확장으로 대체한다.
 
 ## UI
 
@@ -54,7 +64,7 @@ slug: new-topic
 | 문제 해결 | 그래픽이 안 나올 때 |
 | 파이프라인 | 그래픽스 · 컴퓨트 · 메시 셰이더 |
 | 리소스 | Descriptor · 버퍼/이미지 · 메모리 |
-| 렌더링 | Render Pass & 서브패스 · Dynamic Rendering |
+| 렌더링 | 스왑체인 · Render Pass & 서브패스 · Dynamic Rendering |
 | 동기화 | 동기화 전체 |
 | 엔진 실전 | 성능 최적화 · 멀티스레딩 |
 | 확장기능 | 핵심 · 렌더링 · 고급 |

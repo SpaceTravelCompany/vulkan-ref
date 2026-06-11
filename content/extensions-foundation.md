@@ -1,5 +1,5 @@
 ---
-title: 확장기능 — 핵심 기반
+title: 핵심 기반
 slug: extensions-foundation
 ---
 

@@ -350,7 +350,7 @@ typedef struct VkComponentMapping {
 - src/dst 모두 같은 `VkDevice`에서 생성되어야 한다(VUID-commonparent).
 - src/dst의 `usage` 플래그에 `TRANSFER_SRC` / `TRANSFER_DST`가 켜져 있어야 한다.
   - `vkCmdCopyBuffer`의 src는 `TRANSFER_SRC`, dst는 `TRANSFER_DST` 필수(VUID-srcBuffer-00118 / dstBuffer-00120).
-- `vkCmdBlitImage` / `vkCmdCopyImage`는 큐 패밀리가 graphics 또는 compute(일부 조건)여야 한다.
+- `vkCmdBlitImage`는 graphics 큐에서만, `vkCmdCopyImage`는 graphics/compute/transfer 큐에서 호출 가능하다.
 - **`vkCmdCopyBuffer`는 non-sparse 버퍼는 단일 `VkDeviceMemory`에 fully-bound** 상태여야 한다(VUID-srcBuffer-00119 / dstBuffer-00121).
 - sync2 / `VK_KHR_copy_commands2`를 쓰면 `vkCmdCopy*2` / `Vk*Info2` 구조체로 확장 가능한 변종을 쓸 수 있다.
 
@@ -635,7 +635,7 @@ void acquireOnTransfer(VkCommandBuffer xferCmd, VkImage image) {
 | 인덱스 버퍼 채우기 | `vkCmdCopyBuffer` | `TRANSFER_SRC` / `TRANSFER_DST` | gfx/comp/xfer |
 | 텍스처 업로드 | `vkCmdCopyBufferToImage` | `TRANSFER_SRC` / `TRANSFER_DST` (이미지) | gfx/comp/xfer |
 | 텍스처 readback | `vkCmdCopyImageToBuffer` | `TRANSFER_SRC` (이미지) / `TRANSFER_DST` | gfx/comp/xfer |
-| 이미지 → 이미지 복사 | `vkCmdCopyImage` | `TRANSFER_SRC` / `TRANSFER_DST` | gfx/comp |
+| 이미지 → 이미지 복사 | `vkCmdCopyImage` | `TRANSFER_SRC` / `TRANSFER_DST` | gfx/comp/xfer |
 | 스케일/포맷 변환 복사 | `vkCmdBlitImage` | `TRANSFER_SRC` / `TRANSFER_DST` | gfx only |
 | Mipmap 생성 | `vkCmdBlitImage` (같은 이미지의 mip 간) | `TRANSFER_SRC` / `TRANSFER_DST` | gfx only |
 | MSAA → 1x 다운샘플 | `vkCmdResolveImage` | `TRANSFER_SRC` / `TRANSFER_DST` (dst는 1x) | gfx only |

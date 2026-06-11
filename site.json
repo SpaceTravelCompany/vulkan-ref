@@ -87,6 +87,13 @@
       "title": "렌더링",
       "topics": [
         {
+          "slug": "swapchain",
+          "title": "스왑체인",
+          "summary": "VkSwapchainKHR · Acquire · Present · Recreate · PresentMode",
+          "icon": "⇌"
+        },
+
+        {
           "slug": "render-pass",
           "title": "Render Pass & 서브패스",
           "summary": "TBDR · Input Attachment · 서브패스",

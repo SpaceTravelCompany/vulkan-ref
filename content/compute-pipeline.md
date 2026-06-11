@@ -70,7 +70,7 @@ vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compCI, nullptr, &computePi
 **유효성 규칙:**
 - `stage.stage`는 반드시 `VK_SHADER_STAGE_COMPUTE_BIT`여야 함
 - `layout`의 `VkPipelineLayout`은 셰이더가 사용하는 모든 descriptor / push constant를 포함해야 함
-- `VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`는 `shaderEnqueue` feature 필요
+- `VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`는 `shaderMeshEnqueue` feature 필요
 - `VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV`로 Device-Generated Commands 지원
 - 메시 셰이더나 레이 트레이싱 관련 flag는 전부 금지
 
@@ -302,7 +302,7 @@ vkCmdPipelineBarrier(cmdBuffer,
 ### 9.3. `VK_KHR_compute_shader_derivatives`
 - 컴퓨트 셰이더에서 `dFdx` / `dFdy` 등 그래픽스 전용 함수 사용 가능.
 
-### 9.4. `VK_NV_shader_inline_uniform_block`
+### 9.4. `VK_EXT_inline_uniform_block` (Vulkan 1.3 core 승격)
 - 인라인 유니폼 블록: 작은 상수 데이터를 별도 버퍼 없이 전달.
 
 ### 9.5. Pipeline Binary / Pipeline Cache
