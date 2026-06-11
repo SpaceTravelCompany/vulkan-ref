@@ -87,6 +87,12 @@
           "icon": "⊟"
         },
         {
+          "slug": "queries",
+          "title": "Queries",
+          "summary": "VkQueryPool · Occlusion · Timestamp · Pipeline Statistics",
+          "icon": "◐"
+        },
+        {
           "slug": "memory",
           "title": "메모리",
           "summary": "타입 · 정렬 · 캐시 · 스테이징",
