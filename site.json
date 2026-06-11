@@ -71,7 +71,7 @@
         {
           "slug": "descriptors",
           "title": "Descriptor & Layout",
-          "summary": "Layout → Pool → Set → Bind",
+          "summary": "Layout → Pool → Set · Sampler · ImageView",
           "icon": "⊞"
         },
         {
@@ -79,6 +79,12 @@
           "title": "버퍼 & 이미지",
           "summary": "VkBuffer · VkImage · ImageView · 생성·복사·주의사항",
           "icon": "▥"
+        },
+        {
+          "slug": "samplers",
+          "title": "Sampler",
+          "summary": "VkSamplerCreateInfo · 필터 · address mode · LOD · anisotropy",
+          "icon": "⊟"
         },
         {
           "slug": "memory",
