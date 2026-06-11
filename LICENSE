@@ -1,39 +1,21 @@
-Vulkan Reference license policy
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
 
-This repository uses separate licenses for software code and documentation
-content.
+Documentation and reference content in this repository are licensed under the
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License
+(CC BY-NC-SA 4.0).
 
-1. Software code
+You may share and adapt the licensed documentation content if you:
 
-   Unless otherwise stated, source code and build assets in this repository are
-   licensed under the MIT License. See LICENSE-CODE.
+- give appropriate credit,
+- do not use it for commercial purposes,
+- distribute adaptations under the same license, and
+- indicate if changes were made.
 
-   This includes:
-   - assets/
-   - lib/
-   - scripts/
-   - package.json and package-lock.json
-   - site.json
-   - repository configuration files
+License deed:
+https://creativecommons.org/licenses/by-nc-sa/4.0/
 
-2. Documentation and reference content
+Legal code:
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
 
-   Documentation and reference content are licensed under the Creative Commons
-   Attribution-NonCommercial-ShareAlike 4.0 International License. See
-   LICENSE-CONTENT.
-
-   This includes:
-   - content/
-   - README.md documentation sections
-   - generated documentation content embedded in dist/
-
-3. Generated output
-
-   Files in dist/ are generated from both software code and documentation
-   content. The code/assets portions remain under the MIT License. The embedded
-   documentation/reference content remains under CC BY-NC-SA 4.0.
-
-4. Third-party dependencies
-
-   Third-party dependencies keep their own licenses.
-
+Attribution name:
+SpaceTravelCompany

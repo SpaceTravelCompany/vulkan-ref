@@ -70,7 +70,5 @@ slug: new-topic
 
 ## 라이선스
 
-- 사이트 코드: [MIT License](LICENSE-CODE)
-- 문서/콘텐츠: [CC BY-NC-SA 4.0](LICENSE-CONTENT)
-- 빌더 코드(topic-pages): [MIT](https://github.com/SpaceTravelCompany/topic-pages/blob/main/LICENSE)
-- 전체 정책: [LICENSE](LICENSE)
+- 문서/콘텐츠: [CC BY-NC-SA 4.0](LICENSE)
+- 빌더(topic-pages): [MIT](https://github.com/SpaceTravelCompany/topic-pages/blob/main/LICENSE)

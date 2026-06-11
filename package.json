@@ -2,7 +2,7 @@
   "name": "vulkan-ref",
   "version": "1.0.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "CC-BY-NC-SA-4.0",
   "type": "module",
   "scripts": {
     "build": "topic-pages build",
