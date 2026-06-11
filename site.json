@@ -31,6 +31,12 @@
           "title": "그래픽이 안 나올 때",
           "summary": "Draw부터 Submit까지 점검 체크리스트",
           "icon": "⚠"
+        },
+        {
+          "slug": "validation-and-debug",
+          "title": "Validation & Debug",
+          "summary": "VK_EXT_debug_utils · 검증 레이어 · 객체 이름 · 라벨",
+          "icon": "🔍"
         }
       ]
     },
