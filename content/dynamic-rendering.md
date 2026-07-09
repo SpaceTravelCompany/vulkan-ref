@@ -5,7 +5,7 @@ slug: dynamic-rendering
 
 ## 소개
 
-Dynamic Rendering은 `VkRenderPass`와 `VkFramebuffer` 객체를 미리 만들지 않고, command buffer 기록 시점에 `vkCmdBeginRendering`으로 렌더 타겟을 직접 지정하는 방식이다.
+Dynamic Rendering은 `VkRenderPass`와 `VkFramebuffer` 객체를 미리 만들지 않고, command buffer 기록 시점에 `vkCmdBeginRendering`으로 렌더 타겟을 직접 지정하는 방식이다. [!badge-info:Vulkan 1.3 Core] `VK_KHR_dynamic_rendering`은 **Vulkan 1.3 부터 코어**에 들어왔다 — 1.3 이상에서는 별도 확장으로 활성화할 필요가 없다.
 
 중요한 점은 **Render Pass 개념이 완전히 사라지는 것이 아니라**, 사전에 생성하던 `VkRenderPass` 객체와 `VkFramebuffer` 객체가 사라진다는 것이다. `vkCmdBeginRendering`부터 `vkCmdEndRendering`까지는 여전히 하나의 render pass instance처럼 동작한다.
 

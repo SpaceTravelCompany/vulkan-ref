@@ -7,6 +7,9 @@ slug: draw-not-showing
 
 `vkCmdDraw`, `vkCmdDrawIndexed` 등에서 **instanceCount는 최소 1**이어야 한다. 인스턴싱을 쓰지 않더라도 1로 설정해야 화면에 그려진다.
 
+> [!TIP]
+> 이 페이지의 거의 모든 실수는 **검증 레이어를 켜 두면 실행 전에 잡힙니다.** 표준 위반은 조용히 GPU 쪽에서 누락되어 "안 그려짐"으로 둔갑하기 쉽거든요. `validation-and-debug` 토픽에서 `VK_LAYER_KHRONOS_validation` 활성화 방법을 참고하세요.
+
 ```c
 // 잘못된 예 — 아무것도 그려지지 않음
 vkCmdDraw(cmd, vertexCount, 0, firstVertex, firstInstance);
