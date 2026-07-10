@@ -14,8 +14,6 @@ slug: descriptors
 
 ---
 
----
-
 ## 1. 큰 그림
 
 ```cmdstack
@@ -46,8 +44,6 @@ vkCmdBindDescriptorSets() ← 드로우 시 전달
 3. **Set 할당**: Layout을 기반으로 실제 descriptor set을 할당
 4. **Set 업데이트**: 할당된 set에 실제 buffer/image/sampler를 연결
 5. **Set 바인딩**: 드로우/디스패치 전에 set을 파이프라인에 바인딩
-
----
 
 ---
 
@@ -114,8 +110,6 @@ vkCreateDescriptorSetLayout(device, &dslCI, nullptr, &descriptorSetLayout);
 
 ---
 
----
-
 ## 3. VkPipelineLayout ("파이프라인에 layout 연결")
 
 파이프라인을 생성할 때, 어떤 descriptor set layout을 사용할지 전달한다.
@@ -152,8 +146,6 @@ vkCreatePipelineLayout(device, &plCI, nullptr, &pipelineLayout);
 
 ---
 
----
-
 ## 4. VkDescriptorPool ("descriptor 메모리")
 
 실제 descriptor set을 할당하려면 먼저 descriptor pool이 필요하다.
@@ -180,8 +172,6 @@ vkCreateDescriptorPool(device, &poolCI, nullptr, &descriptorPool);
 - 개별 descriptor set을 `vkFreeDescriptorSets()`로 해제하려면 `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT` 필요
 - 대량 할당은 pool 하나에 몰아서 = `vkResetDescriptorPool`로 한 번에 리셋
 - `VkPhysicalDeviceLimits::maxDescriptorSet*` 시리즈 제한 확인 필수
-
----
 
 ---
 
@@ -234,8 +224,6 @@ vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 
 ---
 
----
-
 ## 6. 바인딩과 드로우
 
 이제 실제로 그릴 때 Descriptor Set을 파이프라인에 연결한다.
@@ -257,8 +245,6 @@ vkCmdDraw(cmdBuffer, vertexCount, 1, 0, 0);
 
 ---
 
----
-
 ## 7. 여러 Set / 여러 Binding 예제
 
 ```c
@@ -272,8 +258,6 @@ VkDescriptorSet sets[] = { gbufferSet, lightingSet };
 vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
     pipelineLayout, 0, 2, sets, 0, nullptr);
 ```
-
----
 
 ---
 
@@ -330,8 +314,6 @@ poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
 ```
 
 이를 사용하면 매번 새 set을 할당하지 않고, 큰 descriptor 배열의 일부 슬롯만 나중에 채우거나 교체하는 바인드리스 패턴을 만들 수 있다. 단, GPU가 이미 실행 중인 작업에서 같은 descriptor를 읽고 있을 수 있으므로 frame-in-flight, fence, timeline semaphore 같은 동기화 설계는 여전히 필요하다. 드라이버가 더 유연한 descriptor 추적을 해야 해서 성능 trade-off도 생길 수 있다.
-
----
 
 ---
 

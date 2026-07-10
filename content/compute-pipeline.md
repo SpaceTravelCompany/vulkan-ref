@@ -15,8 +15,6 @@ Vulkan의 컴퓨트 파이프라인(VkComputePipeline)은 그래픽스 파이프
 
 ---
 
----
-
 ## 1. 그래픽스 파이프라인과의 차이
 
 | 항목 | Graphics Pipeline | Compute Pipeline |
@@ -29,8 +27,6 @@ Vulkan의 컴퓨트 파이프라인(VkComputePipeline)은 그래픽스 파이프
 | 출력 | Color Attachment / DepthStencil | Storage Buffer / Storage Image (UAV) |
 | 호출 방식 | `vkCmdDraw*` | `vkCmdDispatch*` |
 | 실행 단위 | 정점 → 프리미티브 → 프래그먼트 | **Workgroup → Invocation** |
-
----
 
 ---
 
@@ -76,8 +72,6 @@ vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compCI, nullptr, &computePi
 
 ---
 
----
-
 ## 3. GLSL 컴퓨트 셰이더 기본 구조
 
 컴퓨트 셰이더는 그래픽스 셰이더와 달리 `main()`이 **각 스레드마다 실행**된다.
@@ -118,8 +112,6 @@ void main() {
 
 ---
 
----
-
 ## 4. Dispatch (실행)
 
 ```c
@@ -145,8 +137,6 @@ groupCountX × groupCountY × groupCountZ × local_size_x × local_size_y × loc
 ```
 
 예: `vkCmdDispatch(4, 1, 1)` + `local_size_x = 256` = 1024 invocations
-
----
 
 ---
 
@@ -184,8 +174,6 @@ Workgroup (3,0,0)
 | `atomic*()` | shared memory 또는 buffer에 대한 원자 연산 |
 | `gl_LocalInvocationID` | workgroup 내 인덱스 (0 ~ local_size-1) |
 | `gl_WorkGroupID` | dispatch 내 workgroup 인덱스 |
-
----
 
 ---
 
@@ -232,8 +220,6 @@ void main() {
 
 ---
 
----
-
 ## 7. DispatchIndirect (간접 디스패치)
 
 GPU가 직접 workgroup 수를 결정하게 하려면 `vkCmdDispatchIndirect`를 사용한다.
@@ -263,8 +249,6 @@ vkCmdDispatchIndirect(cmdBuffer, indirectBuffer, offset);
 
 ---
 
----
-
 ## 8. Pipeline Barrier와 Compute
 
 컴퓨트 파이프라인도 동기화가 필요하다. 기본적으로 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`와 `VK_ACCESS_SHADER_WRITE_BIT` / `VK_ACCESS_SHADER_READ_BIT`를 사용한다.
@@ -289,8 +273,6 @@ vkCmdPipelineBarrier(cmdBuffer,
 
 ---
 
----
-
 ## 9. 컴퓨트에 유용한 확장 기능들
 
 ### 9.1. `VK_KHR_shader_float16_int8` (Vulkan 1.2)
@@ -311,8 +293,6 @@ vkCmdPipelineBarrier(cmdBuffer,
 ```c
 vkCreateComputePipelines(device, pipelineCache, 1, &compCI, nullptr, &pipeline);
 ```
-
----
 
 ---
 
@@ -363,8 +343,6 @@ vkCmdPushConstants(cmd, pipelineLayout,
 uint32_t groupCount = (pc.count + 255) / 256;
 vkCmdDispatch(cmd, groupCount, 1, 1);
 ```
-
----
 
 ---
 

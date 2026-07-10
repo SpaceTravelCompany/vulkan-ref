@@ -50,8 +50,6 @@ vkCopyMemoryToImageEXT(device, &copyInfo);
 
 ---
 
----
-
 ## 14. VK_KHR_map_memory2 — 메모리 매핑2
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
@@ -82,8 +80,6 @@ VkMemoryUnmapInfo unmapInfo = {
 };
 vkUnmapMemory2KHR(device, &unmapInfo);
 ```
-
----
 
 ---
 
@@ -197,8 +193,6 @@ vkCmdExecuteGeneratedCommandsEXT(
 
 ---
 
----
-
 ## 16. 레이 트레이싱 확장기능 세트
 
 ### VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline + VK_KHR_ray_query
@@ -275,8 +269,6 @@ vkCmdTraceRaysKHR(
 
 ---
 
----
-
 ## 17. VK_KHR_shader_integer_dot_product — 정수 도트 프로덕트
 
 > **Vulkan 1.3 코어 승격 | AI/ML 가속**
@@ -299,8 +291,6 @@ void main() {
     uint result = dot(a, b);  // INT8 도트 프로덕트
 }
 ```
-
----
 
 ---
 
@@ -346,8 +336,6 @@ vkReleaseSwapchainImagesKHR(device, &releaseInfo);
 
 ---
 
----
-
 ## 19. VK_EXT_pipeline_creation_cache_control — 비동기 파이프라인 생성
 
 > **Vulkan 1.3 코어 승격**
@@ -373,8 +361,6 @@ if (result == VK_PIPELINE_COMPILE_REQUIRED) {
     // 다음 프레임에 다시 시도
 }
 ```
-
----
 
 ---
 

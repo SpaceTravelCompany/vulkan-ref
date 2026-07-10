@@ -53,8 +53,6 @@ VkBufferUsageFlags2CreateInfo bufferUsage2 = {
 
 ---
 
----
-
 ## 8. VK_EXT_mesh_shader — 메시 셰이딩
 
 > **차세대 지오메트리 파이프라인 | NVIDIA Ada+, AMD RDNA3+, Intel Arc+**
@@ -173,8 +171,6 @@ void main() {
 
 ---
 
----
-
 ## 9. VK_EXT_extended_dynamic_state — 확장 동적 상태
 
 > **Vulkan 1.3 코어 승격 (부분) | 파이프라인 최소화에 필수**
@@ -237,8 +233,6 @@ vkCmdSetDepthCompareOp(cmd, VK_COMPARE_OP_GREATER);
 
 ---
 
----
-
 ## 10. VK_KHR_dynamic_rendering_local_read — 로컬 읽기
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
@@ -271,8 +265,6 @@ VkRenderingInputAttachmentIndexInfo inputInfo = {
 
 ---
 
----
-
 ## 11. VK_KHR_load_store_op_none — Load/Store None
 
 > **Vulkan 1.4 코어 승격 | Roadmap 2024 필수**
@@ -295,8 +287,6 @@ VkRenderingAttachmentInfo attachment = {
     .storeOp = VK_ATTACHMENT_STORE_OP_NONE,   // ← 내용 보존, 스토어 동기화 생략
 };
 ```
-
----
 
 ---
 

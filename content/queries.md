@@ -18,8 +18,6 @@ Vulkan에서 **GPU가 측정한 값을 CPU로 가져오는 통로**가 `VkQueryP
 
 ---
 
----
-
 ## 1. 큰 그림
 
 ```cmdstack
@@ -45,8 +43,6 @@ CPU가 결과 읽기:
 - 결과는 **GPU 비동기**. CPU가 `vkGetQueryPoolResults` 호출 시점에 GPU가 끝나지 않았으면 `WAIT_BIT` 또는 fence로 동기화 필요.
 - `OCLUSION`과 `PIPELINE_STATISTICS`는 **graphics 큐**에서만 (VUID-vkCmdBeginQuery-queryType-00803/00804).
 - `PIPELINE_STATISTICS`는 `pipelineStatisticsQuery` feature 필요 (VUID-VkQueryPoolCreateInfo-queryType-00791).
-
----
 
 ---
 
@@ -91,8 +87,6 @@ typedef struct VkQueryPoolCreateInfo {
 
 ---
 
----
-
 ## 3. `vkCmdBeginQuery` / `vkCmdEndQuery` — 영역 기반
 
 occlusion과 pipeline statistics는 **begin/end로 영역**을 감싼다. 영역 안의 모든 작업이 카운트에 반영.
@@ -120,8 +114,6 @@ vkCmdEndQuery(cmd, pool, queryIdx);
 - 비트 활성화 시 GPU가 **정확한** 샘플 수를 셈 (보통 4x MSAA까지 정확). 비활성화 시 0/양수/음수가 아닌 **근사치**를 반환할 수 있어 **히트/미스 비교만** 의미 있음.
 
 > **스펙 원문 (VUID-vkCmdBeginQuery)** If the `occlusionQueryPrecise` feature is not enabled, or the `queryType` used to create `queryPool` was not `OCCLUSION`, `flags` must not contain `VK_QUERY_CONTROL_PRECISE_BIT`.
-
----
 
 ---
 
@@ -168,8 +160,6 @@ double elapsed_ms = elapsed_ns / 1e6;
 
 ---
 
----
-
 ## 5. `vkCmdResetQueryPool` — 풀 초기화
 
 ```c
@@ -181,8 +171,6 @@ vkCmdResetQueryPool(cmd, pool, firstQuery, queryCount);
 - `RESET_BIT_KHR`로 생성된 풀은 첫 사용 전 reset 불필요
 
 > **스펙 원문** "All queries used by the command must be unavailable" (timestamps) — reset을 한 슬롯이 `vkCmdWriteTimestamp`로 사용 가능.
-
----
 
 ---
 
@@ -277,8 +265,6 @@ vkCmdCopyQueryPoolResults(cmd, pool, 0, queryCount,
 
 ---
 
----
-
 ## 7. `PIPELINE_STATISTICS` — 11종 카운터
 
 `pipelineStatistics` 비트마스크로 켤 카운터를 고른다. 결과는 카운터당 1개 `uint64` (PIPELINE_STATISTICS_queryType에 한해). `64_BIT` 강제.
@@ -312,8 +298,6 @@ vkCmdCopyQueryPoolResults(cmd, pool, 0, queryCount,
 
 ---
 
----
-
 ## 8. `VK_KHR_performance_query` (간단히)
 
 `VK_KHR_performance_query`는 디바이스별 카운터(예: GPU 클럭, 메모리 대역폭, L2 캐시 미스 등)를 다룬다. `pipelineStatisticsQuery`보다 강력하지만 디바이스 의존적.
@@ -336,8 +320,6 @@ vkCreateQueryPool(device, &qpci, nullptr, &pool);
 
 ---
 
----
-
 ## 9. `vkCmdBeginQueryIndexedEXT` / `vkCmdEndQueryIndexedEXT`
 
 `VK_EXT_transform_feedback` 잔재 + multi-view 카운팅. `VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT`, `MESH_PRIMITIVES_GENERATED_EXT`와 함께 사용. 메쉬/트랜스폼 피드백에서 **view index별로 별도 카운트**.
@@ -347,8 +329,6 @@ vkCmdBeginQueryIndexedEXT(cmd, pool, queryIdx, flags, index);
 ```
 
 `index`는 multi-view의 view index. 결과는 query마다 한 슬롯이지만, view별로 카운트가 누적되지 않음(독립).
-
----
 
 ---
 
@@ -384,8 +364,6 @@ double frame_ms = (double)(ts[1] - ts[0]) * (double)timestampPeriod / 1e6;
 
 ---
 
----
-
 ## 11. Occlusion 활용 — Hi-Z 빌드 / 컬링
 
 ```c
@@ -408,8 +386,6 @@ if (samplesPassed > threshold) {
 
 - 보통 `threshold`는 `targetWidth * targetHeight * 0.001` 같이 매우 작은 값
 - precise는 보통 끄고 (PARTIAL_BIT 없이) 0 vs non-0 비교만 사용
-
----
 
 ---
 

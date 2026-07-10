@@ -18,8 +18,6 @@ slug: uniform-and-storage-buffers
 
 ---
 
----
-
 ## 1. 큰 그림
 
 ```cmdstack
@@ -51,8 +49,6 @@ vkCmdBindDescriptorSets (..., dynamicOffsetCount, pDynamicOffsets)
 
 ---
 
----
-
 ## 2. 4종 + 2종 buffer descriptor
 
 | descriptorType | buffer 필요? | 사용 권한 | 비고 |
@@ -72,8 +68,6 @@ vkCmdBindDescriptorSets (..., dynamicOffsetCount, pDynamicOffsets)
 
 > **스펙 원문 (스펙 15.1.7)** "A storage buffer ... is a descriptor type associated with a buffer resource directly, described in a shader as a structure ... load, store, and atomic operations can be performed on."
 >> SSBO는 셰이더에서 완전 read/write.
-
----
 
 ---
 
@@ -125,8 +119,6 @@ typedef struct VkDescriptorBufferInfo {
 
 ---
 
----
-
 ## 4. `vkUpdateDescriptorSets`로 descriptor 채우기
 
 ```c
@@ -149,8 +141,6 @@ vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
 > **스펙 원문 (스펙 15.2)** "For `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`, `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`, `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC`, or `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC`, all members of each element of `VkWriteDescriptorSet::pBufferInfo` are accessed."
 >> 4종 buffer descriptor는 모두 `pBufferInfo`의 모든 필드 사용.
-
----
 
 ---
 
@@ -190,8 +180,6 @@ for (uint32_t i = 0; i < numDraws; i++) {
 - **합산**: set에 dynamic UBO 1개 + dynamic SSBO 1개 → `dynamicOffsetCount=2`, `pDynamicOffsets[0]=UBO offset`, `pDynamicOffsets[1]=SSBO offset`
 
 > **실전 팁** `dynamicOffsetCount` 실수 매우 흔함. set 안의 dynamic descriptor 개수와 항상 일치하는지 assert/debug.
-
----
 
 ---
 
@@ -247,8 +235,6 @@ imageStore(myTexels, 0, vec4(1,0,0,1));
 
 ---
 
----
-
 ## 7. Inline Uniform Block (INLINE_UNIFORM_BLOCK)
 
 **Descriptor set의 backing storage에 직접 상수를 박는** 형태. 별도 buffer 없음. UBO와 같은 `layout(set, binding) uniform UBO`로 받지만 **메모리가 set 안에 있음**.
@@ -296,8 +282,6 @@ vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
 ---
 
----
-
 ## 8. Descriptor Pool — buffer 슬롯 만들기
 
 ```c
@@ -319,8 +303,6 @@ vkCreateDescriptorPool(device, &poolCI, nullptr, &pool);
 
 > **스펙 원문 (스펙 13.2.3)** descriptor type 별로 슬롯 개수 별도 카운트. 한 set이 UBO 1개 + SSBO 2개면 pool에 UBO 1, SSBO 2씩 소비.
 >> pool 사이즈 부족하면 `vkAllocateDescriptorSets`가 `VK_ERROR_OUT_OF_POOL_MEMORY` 반환.
-
----
 
 ---
 
@@ -404,8 +386,6 @@ vec3 c = texelFetch(hdrLut, idx).rgb;
 
 ---
 
----
-
 ## 10. 자주 빠지는 주의사항 모음
 
 ### 10.1. UBO/SSBO 일반
@@ -454,8 +434,6 @@ vec3 c = texelFetch(hdrLut, idx).rgb;
 - [ ] `vkUpdateDescriptorSets` + `vkCmdBindDescriptorSets` 순서 헷갈. set update는 **bind 전에** 끝나야 함.
 - [ ] 같은 buffer를 UBO + SSBO 두 descriptor로 동시에 노출 — 보통 무효는 아니지만 의도 불명.
 - [ ] **descriptor type / buffer usage / shader 인터페이스** 셋이 안 맞음 (UBO인데 TRANSFER_DST만 켜진 buffer 등).
-
----
 
 ---
 
