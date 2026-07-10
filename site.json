@@ -3,6 +3,7 @@
   "subtitle": "Vulkan 정보를 주제별로 정리",
   "brandMark": "Vk",
   "storagePrefix": "vulkan-ref",
+  "baseUrl": "https://spacetravelcompany.github.io/vulkan-ref",
   "references": [
     {
       "label": "Vulkan Reference",
