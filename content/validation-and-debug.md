@@ -18,8 +18,6 @@ Vulkan은 명시적 API라 잘못 써도 GPU가 조용히 작동할 수 있다. 
 
 ---
 
----
-
 ## 1. 큰 그림
 
 ```cmdstack
@@ -48,8 +46,6 @@ vkCmdEndDebugUtilsLabelEXT(cmd)
 - 인스턴스/디바이스 lifetime 동안 **인스턴스 destroy까지** 모든 메시지를 받으려면 `pNext`에 messenger를 연결한다.
 - **출시 빌드에는 layer를 끄고** `VK_EXT_debug_utils` extension 자체도 빼는 게 일반적이다 (콜백 함수가 nullptr가 되어도 OK, layer는 보통 instance create에서만 동작).
 - 객체에 **이름을 다는 습관**은 validation 메시지의 가독성을 비약적으로 올린다.
-
----
 
 ---
 
@@ -134,8 +130,6 @@ ici.pNext = &vf;
 
 ---
 
----
-
 ## 3. `VK_EXT_debug_utils` — Messenger
 
 > **스펙 원문** "The application should always return `VK_FALSE`. The `VK_TRUE` value is reserved for use in layer development."
@@ -210,8 +204,6 @@ typedef struct VkDebugUtilsMessengerCallbackDataEXT {
 
 ---
 
----
-
 ## 4. 객체 이름 — `vkSetDebugUtilsObjectNameEXT`
 
 검증 메시지가 `Image 0xc0dec0de...`라고만 나오면 디버깅이 지옥이다. **이름을 다는 습관**이 핵심.
@@ -263,8 +255,6 @@ with no memory bound to it.
 ### 4.2. 성능 영향
 
 이름 다는 작업은 **메타데이터 dict에 한 줄 추가**하는 수준이라 GPU 성능에 영향 없음. 단 string 복사가 발생하므로 **핫 루프에서 매 프레임 갱신은 피해야** 한다. 한 번 다는 게 정석.
-
----
 
 ---
 
@@ -321,8 +311,6 @@ pfnCmdInsert(cmd, &(VkDebugUtilsLabelEXT{
 
 ---
 
----
-
 ## 6. `vkSubmitDebugUtilsMessageEXT` — 앱이 직접 메시지 보내기
 
 검증/성능/일반 메시지를 **콜백 흐름에 직접 주입**할 수 있다. 로깅/통계/원격 분석 연동에 유용.
@@ -347,8 +335,6 @@ pfnSubmit(instance,
 
 ---
 
----
-
 ## 7. RenderDoc / 외부 도구 연동
 
 - **RenderDoc**: Vulkan 지원. 앱이 VK_EXT_debug_utils로 단 이름이 RenderDoc 캡처에서도 그대로 보임. RenderDoc의 "Resource Inspector"에서 이름으로 검색 가능.
@@ -356,8 +342,6 @@ pfnSubmit(instance,
 - **NSight Graphics / Vulkan**: 같은 라벨을 시각화. 멀티 GPU 디버깅에도 유용.
 
 > **팁** RenderDoc 캡처를 뜰 때 검증 layer가 켜져 있으면 캡처 로드 시 validation 메시지가 같이 출력되어 추가 디버깅 단서가 된다.
-
----
 
 ---
 
@@ -400,8 +384,6 @@ pfnSubmit(instance,
 - [ ] GPU-assisted 켠 상태로 성능 측정 → 결과가 정상 성능이 아님. 프로파일링 시 **layer 끄기**.
 - [ ] 콜백에서 printf 매 호출 → 성능 저하. 가능하면 **rate limit** 또는 severity ERROR만 즉시 출력.
 - [ ] validation layer가 dev 디바이스를 못 찾음 → SDK 설치 또는 `VK_LAYER_PATH` 환경변수 확인.
-
----
 
 ---
 
@@ -484,8 +466,6 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     return VK_FALSE;
 }
 ```
-
----
 
 ---
 

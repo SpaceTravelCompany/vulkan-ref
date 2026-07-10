@@ -55,8 +55,6 @@ slug: sparse-resources
 
 ---
 
----
-
 ## 1. 큰 그림 — sparse vs 일반
 
 ```cmdstack
@@ -86,8 +84,6 @@ VkBuffer/Image (flags: SPARSE_BINDING_BIT, ...)
 | 메모리 residency | 항상 fully resident | 부분 resident 가능 |
 | 큐 종류 | graphics / compute / transfer | **VK_QUEUE_SPARSE_BINDING_BIT** 큐 |
 | 동기화 | 자동 (필요 시 fence/semaphore) | 명시적 wait/signal semaphore |
-
----
 
 ---
 
@@ -157,8 +153,6 @@ ici.flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT
 
 ---
 
----
-
 ## 3. Sparse property 조회
 
 ### 3.1. 디바이스 sparse 속성
@@ -204,8 +198,6 @@ for (auto& r : reqs) {
 
 ---
 
----
-
 ## 4. `VkSparseMemoryBind` — 한 bind 단위
 
 ```c
@@ -228,8 +220,6 @@ typedef struct VkSparseMemoryBind {
 >> LAZILY_ALLOCATED 메모리는 sparse에 못 묶음. 그 메모리는 transient attachment 전용.
 
 > **스펙 원문 (VUID-VkSparseMemoryBind-size-01098/01099/01100/01101/01102)** `size > 0`, `resourceOffset < resourceSize`, `resourceOffset + size <= resourceSize`, `memoryOffset < memorySize`, `size <= memorySize - memoryOffset`.
-
----
 
 ---
 
@@ -281,8 +271,6 @@ bufferBind.pBinds     = binds;
 
 > **스펙 원문** (스펙 36.7.5) "For all sparse resources the `VkMemoryRequirements::alignment` member specifies both the binding granularity in bytes and the required alignment of `VkDeviceMemory`."
 >> `alignment`가 곧 sparse block size.
-
----
 
 ---
 
@@ -370,8 +358,6 @@ metadataBind.memoryOffset   = 0;
 
 > **스펙 원문** "When binding memory explicitly for the `VK_IMAGE_ASPECT_METADATA_BIT` the application must use the `VK_SPARSE_MEMORY_BIND_METADATA_BIT` in the `VkSparseMemoryBind::flags` field when binding memory."
 >> metadata는 일반 image bind가 아니라 **opaque bind + 메타데이터 플래그**.
-
----
 
 ---
 
@@ -467,8 +453,6 @@ vkQueueBindSparse(sparseQueue, 1, &bindInfo, VK_NULL_HANDLE);
 
 ---
 
----
-
 ## 8. Unmapped 가드
 
 **sparse image의 unmapped 영역은 shader가 접근하면 어떻게 되나?** 디바이스 한계에 따라 다름.
@@ -490,8 +474,6 @@ vkQueueBindSparse(sparseQueue, 1, &bindInfo, VK_NULL_HANDLE);
 
 ---
 
----
-
 ## 9. Aliasing
 
 여러 리소스가 같은 메모리 블록을 **시간차**로 공유. **한 번에 하나만 resident**해야 함.
@@ -509,8 +491,6 @@ vkQueueBindSparse(sparseQueue, 1, &bindInfo, VK_NULL_HANDLE);
 - 두 리소스의 **모두** `SPARSE_ALIASED_BIT`로 생성되어야 함
 - 같은 메모리 블록이 두 곳에 동시에 묶이면 **둘 중 하나만 사용 가능**. 다른 쪽은 UB.
 - lifetime 관리가 까다로움 → 보통 **queue family ownership** + **세마포어**로 보호
-
----
 
 ---
 
@@ -571,8 +551,6 @@ vkQueueSubmit(gfxQueue, 1, &submit, fence);
 
 ---
 
----
-
 ## 11. Page streaming — 동적 bind/unbind
 
 Mega texture 등에서 카메라 이동에 따라 페이지를 실시간으로 bind/unbind한다.
@@ -610,8 +588,6 @@ vkQueueBindSparse(sparseQueue, 1, &info, VK_NULL_HANDLE);
 > **주의**: 해제와 바인딩을 **같은 batch**에 넣으면 동기화 cost를 한 번으로 줄일 수 있다. 각각 다른 batch로 제출하면 불필요한 semaphore wait/signal 발생.
 
 > **스펙 원문 (VUID-VkSparseMemoryBind-size-01098)** `size` must be greater than 0. unbind 시에도 size는 block alignment 배수.
-
----
 
 ---
 
@@ -665,8 +641,6 @@ vkQueueBindSparse(sparseQueue, 1, &info, VK_NULL_HANDLE);
 - [ ] `residencyNonResidentStrict = VK_TRUE`인데 셰이더가 unmapped 영역 접근 (가드 없음).
 - [ ] Mip 선택 알고리즘이 unmapped mip을 무시하지 않음.
 - [ ] Unmapped 영역을 0으로 폴백하는 셰이더가 `residencyNonResidentStrict = VK_TRUE` 환경에서 잘못된 데이터를 받음.
-
----
 
 ---
 

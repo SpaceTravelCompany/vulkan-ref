@@ -3,8 +3,6 @@ title: Render Pass & 서브패스
 slug: render-pass
 ---
 
-## 소개
-
 서브패스(Subpass)는 Vulkan 렌더 패스의 핵심 개념이다. 하나의 렌더 패스는 여러 개의 서브패스로 구성되며, 각 서브패스는 **동일한 framebuffer attachment 집합에 대해 파이프라인의 실행 단위를 나누는 방법**이다.
 
 > **왜 서브패스가 필요할까?** 예를 들어 Deferred Shading을 생각해보자. 먼저 GBuffer에 재질/법선 정보를 그리고, 그 결과를 읽어서 라이팅을 계산한다. 두 단계 모두 같은 버퍼를 쓰는데, 만약 서브패스가 없다면 GBuffer를 VRAM에 썼다가 다시 읽어야 한다. 하지만 서브패스로 나누면 GPU가 **on-chip 메모리에서 바로 읽어가** 쓸 수 있어서 대역폭을 크게 절약한다.
@@ -16,8 +14,6 @@ slug: render-pass
 > - **Framebuffer**: Attachment들을 묶은 것
 > - **Input Attachment**: 다른 서브패스의 결과를 읽는 특수한 방식
 > - **TBDR (Tile-Based Deferred Rendering)**: 모바일 GPU의 대표적 구조. 화면을 작은 타일로 나눠서 on-chip에서 처리
-
----
 
 ---
 
@@ -47,8 +43,6 @@ subpasses[1].colorAttachmentCount = 1;
 ```
 
 중요한 점: **같은 framebuffer attachment**를 서브패스 0에서는 color로 쓰고, 서브패스 1에서는 input attachment로 읽는다. GPU가 attachment 데이터를 VRAM에 쓰지 않고 **on-chip 메모리에서 바로 읽어갈 수 있다면** 엄청난 대역폭 절약이 된다.
-
----
 
 ---
 
@@ -94,8 +88,6 @@ vkCmdEndRenderPass(cmdBuffer);
 
 ---
 
----
-
 ## 3. Subpass Dependency
 
 서브패스 사이의 의존성은 `VkSubpassDependency`로 정의한다. attachment의 layout 전환과 메모리 가시성을 서브패스 간에 자동으로 처리한다.
@@ -124,8 +116,6 @@ dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 - **메모리 가시성 보장**: 동일한 서브패스 내에서도 GPU의 병렬 실행 특성상 쓰기 작업이 완료되기 전에 읽기 작업이 일어날 수 있다. 이때 셀프 의존성을 정의하면, 동일 서브패스 내의 작업 간에도 정확한 실행 순서와 메모리 가시성을 보장할 수 있다.
 
 셀프 의존성을 설정할 때는 반드시 `VK_DEPENDENCY_BY_REGION_BIT` 플래그를 함께 사용하여, 픽셀 단위(타일 단위)의 의존성을 명시해야 GPU가 효율적으로 최적화할 수 있다.
-
----
 
 ---
 
@@ -158,8 +148,6 @@ Subpass 0: Scene render   →   Subpass 1: Bloom   →   Subpass 2: Tone mapping
 
 ---
 
----
-
 ## 5. Input Attachment (서브패스의 핵심)
 
 Input attachment는 **같은 framebuffer에 속한 다른 attachment의 픽셀을 셰이더에서 읽는** 특수한 descriptor 타입이다.
@@ -189,8 +177,6 @@ void main() {
 | VRAM 대역폭 필요 | Tile 기반 GPU에서 on-chip 가능 |
 
 Input attachment는 **같은 픽셀 위치의 데이터만 읽으므로** sampler가 필요 없다. `subpassLoad()`는 항상 현재 픽셀의 값을 반환한다.
-
----
 
 ---
 
@@ -235,8 +221,6 @@ Vulkan 1.4에서는 `VkRenderingInputAttachmentIndexInfo` 구조체가 추가되
 
 ---
 
----
-
 ## 7. VK_KHR_create_renderpass2 (Vulkan 1.2)
 
 Vulkan 1.2에서는 `VkSubpassDescription2` / `VkSubpassDependency2`를 도입한 `VK_KHR_create_renderpass2`가 core로 승격되었다.
@@ -251,8 +235,6 @@ subpass.viewMask = 0;       // multiview 지원: 렌더링을 브로드캐스트
 ```
 
 `VkAttachmentReference2`의 pNext 체인을 통해 VRS(fragment shading rate), multisample resolve 관련 확장 구조체를 연결할 수 있다. 사실상 `VkSubpassDescription`(Legacy)은 이제 하위 호환성 유지용이다.
-
----
 
 ---
 

@@ -20,8 +20,6 @@ slug: samplers
 
 ---
 
----
-
 ## 1. `VkSamplerCreateInfo` — 큰 구조
 
 ```c
@@ -52,8 +50,6 @@ typedef struct VkSamplerCreateInfo {
 
 ---
 
----
-
 ## 2. 필터 — `magFilter` / `minFilter` / `mipmapMode`
 
 | 필드 | 의미 | 일반 값 |
@@ -72,8 +68,6 @@ typedef struct VkSamplerCreateInfo {
 | 픽셀아트 2D | NEAREST | NEAREST | NEAREST | 격자 유지 |
 | 그림자 맵 (PCF) | LINEAR | LINEAR | NEAREST | 안티에일리어싱 |
 | 성능 최우선 | LINEAR | NEAREST | NEAREST | 빌리니어 |
-
----
 
 ---
 
@@ -112,8 +106,6 @@ uv 좌표가 [0, 1] 밖일 때 동작. UV는 이미지 평면 축마다 적용 (
 
 ---
 
----
-
 ## 4. Mipmap / LOD — `mipmapMode`, `mipLodBias`, `minLod`, `maxLod`
 
 ```c
@@ -141,8 +133,6 @@ samplerInfo.maxLod      = VK_LOD_CLAMP_NONE;  // 클램프 없음
 - 텍스처 mipmap이 잘 만들어진 경우 → `LINEAR` + `minLod=0` + `maxLod=VK_LOD_CLAMP_NONE` + `mipLodBias=0`
 - LOD blur를 일부러 강하게 하고 싶을 때 → `mipLodBias` 양수
 - 그림자맵처럼 좁은 LOD 범위만 쓰고 싶을 때 → `minLod=2`, `maxLod=4`
-
----
 
 ---
 
@@ -182,8 +172,6 @@ samplerInfo.maxAnisotropy    = 16.0f;  // 1.0 ~ VkPhysicalDeviceLimits::maxSampl
 
 ---
 
----
-
 ## 6. Depth Compare (PCF) — `compareEnable`, `compareOp`
 
 그림자 매핑에서 깊이 텍스처를 **샘플링이 아니라 비교**할 때 사용.
@@ -215,8 +203,6 @@ float visibility = texture(shadowMap, vec3(shadowCoord.xy, shadowCoord.z));
 
 ---
 
----
-
 ## 7. `unnormalizedCoordinates` — 픽셀 단위 텍스처 좌표
 
 셰이더에서 `texture(samp, uv)` 호출 시 uv를 [0,1] 대신 **이미지 크기 단위 픽셀 좌표**로 사용.
@@ -237,8 +223,6 @@ float visibility = texture(shadowMap, vec3(shadowCoord.xy, shadowCoord.z));
 
 ---
 
----
-
 ## 8. `flags` — 특수 sampler 동작
 
 | 플래그 | 의미 | 필요 feature / extension |
@@ -250,8 +234,6 @@ float visibility = texture(shadowMap, vec3(shadowCoord.xy, shadowCoord.z));
 | `IMAGE_PROCESSING_BIT_QCOM` | QCOM image processing 확장 명령에만 사용 | `VK_QCOM_image_processing` |
 
 > **스펙 원문 (VUID-VkSamplerCreateInfo-nonSeamlessCubeMap-06788)** If the `nonSeamlessCubeMap` feature is not enabled, `flags` must not include `VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT`.
-
----
 
 ---
 
@@ -272,8 +254,6 @@ si.magFilter = VK_FILTER_LINEAR;  // minmax filter feature 필요
 
 > **스펙 원문 (VUID-VkSamplerCreateInfo-pNext-06726)** If the `samplerFilterMinmax` feature is not enabled and the pNext chain includes a `VkSamplerReductionModeCreateInfo`, then the `reductionMode` must be `WEIGHTED_AVERAGE`.
 >> feature 없으면 reduction mode가 있어도 무조건 weighted average.
-
----
 
 ---
 
@@ -314,8 +294,6 @@ si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;  // PCF는 보통 NEAREST mip
 VkSampler pcfShadow;
 vkCreateSampler(device, &si, nullptr, &pcfShadow);
 ```
-
----
 
 ---
 
@@ -375,8 +353,6 @@ vkCreateSampler(device, &si, nullptr, &pcfShadow);
 
 ---
 
----
-
 ## 12. 한 표로 보는 권장 sampler 프리셋
 
 | 용도 | mag | min | mipmap | address | aniso | compare | 비고 |
@@ -388,8 +364,6 @@ vkCreateSampler(device, &si, nullptr, &pcfShadow);
 | 큐브맵 환경 | LINEAR | LINEAR | LINEAR | (없음) | 4~8 | FALSE | 큐브 view |
 | Normal map | LINEAR | LINEAR | LINEAR | REPEAT | 8 | FALSE | 셰이더에서 압축 해제 |
 | HDR sky | LINEAR | LINEAR | LINEAR | CLAMP_TO_EDGE | FALSE | FALSE | tonemap 후 |
-
----
 
 ---
 

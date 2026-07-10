@@ -18,8 +18,6 @@ Vulkan의 동기화 프리미티브는 크게 **Fence**, **Semaphore**, **Event*
 
 ---
 
----
-
 ## 1. 개요: 어디서 누구를 동기화하는가
 
 Vulkan 스펙(Chapter 7)은 다음과 같이 정의한다:
@@ -37,8 +35,6 @@ Vulkan 스펙(Chapter 7)은 다음과 같이 정의한다:
 | **Semaphore** | GPU → GPU (큐 간) | GPU (queue) | GPU (queue) | 다른 큐의 작업이 끝날 때까지 기다림 |
 | **Event** | GPU → GPU (동일 큐 내) + Host ↔ GPU | GPU 또는 Host | GPU (command buffer) 또는 Host | 커맨드 버퍼 내/외에서 세밀한 동기화 |
 | **Pipeline Barrier** | GPU → GPU (동일 큐 내) | 커맨드 버퍼 기록 시점 | GPU (하드웨어) | 스테이지 간 메모리 가시성 + 레이아웃 전환 |
-
----
 
 ---
 
@@ -94,8 +90,6 @@ vkQueueSubmit(queue, 1, &submit, inFlightFences[currentFrame]);
 
 currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 ```
-
----
 
 ---
 
@@ -162,8 +156,6 @@ vkSignalSemaphore(device, &signalInfo);
 | 프레젠테이션 | 사용 가능 | 사용 불가 (binary 필수) |
 
 Timeline semaphore 하나로 여러 의존성을 값 기반으로 관리할 수 있어서, **멀티 큐 환경에서 이진 세마포어를 여러 개 관리할 필요가 줄어든다.**
-
----
 
 ---
 
@@ -401,8 +393,6 @@ vkCreateEvent(device, &eventCI, nullptr, &deviceOnlyEvent);
 
 ---
 
----
-
 ## 5. Pipeline Barrier (GPU 내, 커맨드 순서 + 메모리 가시성)
 
 Pipeline Barrier는 가장 자주 사용되는 동기화 수단이다. **이미지 레이아웃 전환**이나 **메모리 가시성 보장**이 필요할 때 거의 반드시 쓴다고 생각하면 된다. 커맨드 버퍼 기록 시점에 **어떤 스테이지들의 작업이 끝나야 다음 스테이지들이 시작될 수 있는지**를 지정한다.
@@ -429,9 +419,6 @@ vkCmdPipelineBarrier(cmdBuffer,
 ```
 
 ---
-
----
-
 
 ## 6. 파이프라인 스테이지 (Pipeline Stage)
 
@@ -461,8 +448,6 @@ vkCmdPipelineBarrier(cmdBuffer,
 - **dstStageMask**: 배리어 **이후**에 제출된 명령들 중, 이 비트로 지정한 스테이지들에 해당하는 작업은 **배리어를 통과한 뒤에만** 실행된다. 즉, (1) src 스테이지들이 끝날 때까지 대기 → (2) 배리어 통과 → (3) dst 스테이지들이 그다음에 진행.
 
 **스테이지 범위 최소화**: src는 가능한 이른 TOP에 가깝게, dst는 가능한 BOTTOM에 가깝게 두어서 대기를 줄이는 것이 좋다.
-
----
 
 ---
 
@@ -544,8 +529,6 @@ TOP_OF_PIPE
 
 ---
 
----
-
 ## 8. 액세스 마스크 (Access Mask)
 
 "어떤 종류의 읽기/쓰기"를 보장할지 지정한다. **MemoryBarrier / BufferMemoryBarrier / ImageMemoryBarrier** 모두 `srcAccessMask`, `dstAccessMask`를 가진다.
@@ -583,15 +566,11 @@ TOP_OF_PIPE
 
 ---
 
----
-
 ## 9. dependencyFlags
 
 - `VK_DEPENDENCY_BY_REGION_BIT`: 픽셀/영역 단위로 의존성(같은 영역만 동기화). 렌더 패스 내부에서 자주 씀.
 - `VK_DEPENDENCY_VIEW_LOCAL_BIT` 등: 멀티뷰/렌더 패스에서 사용.
 - 0: 전체 파이프라인에 걸친 전역 배리어(가장 강한 동기화).
-
----
 
 ---
 
@@ -611,8 +590,6 @@ TOP_OF_PIPE
 - 렌더 패스가 `VkRenderPass` 오브젝트로 생성된 경우, 서브패스 셀프 의존성(self-dependency)이 배리어의 superset이어야 함
 
 > 실무적으로는 **렌더 패스 안에서는** 동일한 서브패스 내에서 attachment를 쓰고 읽는 용도로만 제한하고, 복잡한 배리어는 렌더 패스 **밖으로** 빼는 것이 좋다.
-
----
 
 ---
 
@@ -707,8 +684,6 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 
 ---
 
----
-
 ## 13. 비교 한눈에
 
 | 프리미티브 | 동기화 범위 | 세밀도 |
@@ -728,8 +703,6 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 | "이미지 레이아웃을 바꾸고, 셰이더가 읽을 수 있게 해야 함" | **Pipeline Barrier** |
 | "여러 큐에 걸친 복잡한 의존성을 값으로 관리" | **Timeline Semaphore** |
 | "다음 프레임의 커맨드 버퍼가 이전 프레임 리소스를 덮어써도 됨" | **Fence (프레임당 하나)** |
-
----
 
 ---
 
