@@ -17,6 +17,30 @@ npm run build       # dist/ 정적 HTML 생성
 서빙은 사용자 환경의 도구로 (VS Code Live Server, `npx serve`, `python -m http.server` 등).
 `content/*.md` 또는 `site.json` 수정 후 `npm run build` 다시 실행 → `dist/` 갱신.
 
+## 로컬 개발 (topic-pages 동시 수정)
+
+이 절은 `topic-pages` 빌더 자체를 로컬에서 수정하며 테스트하는 개발자용이다. 일반 사용자는 이 절을 건너뛰고 위 "사용법"대로 수행한다.
+
+```bash
+# topic-pages를 전역 링크로 등록 (topic-pages 디렉토리에서 1회)
+cd ../topic-pages
+npm link
+
+# vulkan-ref에서 링크 연결 (vulkan-ref 디렉토리에서)
+cd ../vulkan-ref
+npm link topic-pages
+```
+
+이후 `topic-pages` 코드를 수정하면 push 없이 `vulkan-ref`에서 `npm run build`로 즉시 확인 가능하다.
+
+- `package.json`은 변경하지 않는다. github: 의존성은 그대로 유지되며, 로컬 링크가 `node_modules`를 오버라이드한다.
+- 링크 해제(원래 github: 의존성으로 복귀)하려면:
+  ```bash
+  npm unlink topic-pages
+  npm install
+  ```
+- 참고: 링크는 현재 머신에서만 유효하며, CI/배포/다른 clone 환경은 `package.json`의 github: 참조를 그대로 사용한다.
+
 ## UI
 
 - **왼쪽**: 주제 버튼 (스크롤 없이 클릭으로 전환)
