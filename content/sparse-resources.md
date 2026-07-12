@@ -57,22 +57,29 @@ slug: sparse-resources
 
 ## 1. 큰 그림 — sparse vs 일반
 
-```cmdstack
-[일반]
-VkBuffer/Image
-  → vkBind*Memory(device, ...)  // 한 번에 fully bind
-  → vkQueueSubmit(gfx/comp)
-
-[Sparse]
-VkBuffer/Image (flags: SPARSE_BINDING_BIT, ...)
-  → vkGetBufferMemoryRequirements → alignment = sparse block size
-  → (필요시) vkGetImageSparseMemoryRequirements → mip-tail 정보
-  → vkQueueBindSparse(queue, ...,
-        bufferBinds:   [...]  // page-by-page 바인딩
-        imageOpaqueBinds:[...]  // mip-tail opaque 바인딩
-        imageBinds:     [...]  // 일반 mip/page 바인딩
-        signalSemaphores:[...])  // 완료 신호
-  → 그래픽/컴퓨트 큐가 sparse 큐의 시그널을 waitSemaphore로 받음
+```flowchart
+flowchart TD
+  A["일반"]
+  B["VkBuffer/Image"]
+  C(["vkBind*Memory(device, ...) — 한 번에 fully bind"])
+  D(["vkQueueSubmit(gfx/comp)"])
+  E["Sparse"]
+  F["VkBuffer/Image (flags: SPARSE_BINDING_BIT, ...)"]
+  G(["vkGetBufferMemoryRequirements → alignment = sparse block size"])
+  H["(필요시) vkGetImageSparseMemoryRequirements → mip-tail 정보"]
+  I(["vkQueueBindSparse(queue, ...)"])
+  J["bufferBinds: [...] — page-by-page 바인딩"]
+  K["imageOpaqueBinds: [...] — mip-tail opaque 바인딩"]
+  L["imageBinds: [...] — 일반 mip/page 바인딩"]
+  M["signalSemaphores: [...] — 완료 신호"]
+  N["그래픽/컴퓨트 큐가 sparse 큐의 시그널을 waitSemaphore로 받음"]
+  A --> B --> C --> D
+  E --> F --> G --> H --> I
+  I --> J
+  I --> K
+  I --> L
+  I --> M
+  M --> N
 ```
 
 **핵심 차이:**

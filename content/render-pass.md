@@ -50,23 +50,22 @@ subpasses[1].colorAttachmentCount = 1;
 
 서브패스는 하나의 렌더 패스 안에서 순차적으로 실행된다. 각 서브패스가 끝나면 자동으로 동기화가 처리된다.
 
-```cmdstack
-렌더 패스 시작
----
-서브패스 0: GBuffer Pass
-vkCmdBindPipeline(..., gbufferPipeline)
-vkCmdDraw(...) ← albedo, normal, roughness에 씀
-...
-서브패스 종료 → 자동 attachment barrier
----
-서브패스 1: Lighting Pass
-vkCmdBindPipeline(..., lightingPipeline)
-vkCmdBindDescriptorSets(...)
-vkCmdDraw(...) ← gbuffer 결과를 input으로 읽고, finalColor에 씀
-...
-서브패스 종료
----
-렌더 패스 종료
+```flowchart
+flowchart TD
+  A["렌더 패스 시작"]
+  B["서브패스 0: GBuffer Pass"]
+  C(["vkCmdBindPipeline(..., gbufferPipeline)"])
+  D(["vkCmdDraw(...) — albedo, normal, roughness에 씀"])
+  E["..."]
+  F["서브패스 종료 → 자동 attachment barrier"]
+  G["서브패스 1: Lighting Pass"]
+  H(["vkCmdBindPipeline(..., lightingPipeline)"])
+  I(["vkCmdBindDescriptorSets(...)"])
+  J(["vkCmdDraw(...) — gbuffer 결과를 input으로 읽고, finalColor에 씀"])
+  K["..."]
+  L["서브패스 종료"]
+  M["렌더 패스 종료"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M
 ```
 
 서브패스 간 전환은 `vkCmdNextSubpass`로 이루어진다.
@@ -275,11 +274,15 @@ subpass.viewMask = 0;       // multiview 지원: 렌더링을 브로드캐스트
 
 `vkGetRenderAreaGranularity`로 타일 경계에 맞춘 `renderArea`를 설정하면 TBDR 효율이 올라간다.
 
-```cmdstack
-G-Buffer Pass
-├── Subpass 0: Depth + Normal ← Input 없음
-├── Subpass 1: Lighting ← Input: G-Buffer (온칩)
-└── Subpass 2: Post ← Input: Lighting
+```flowchart
+flowchart TD
+  A["G-Buffer Pass"]
+  B["Subpass 0: Depth + Normal — Input 없음"]
+  C["Subpass 1: Lighting — Input: G-Buffer (온칩)"]
+  D["Subpass 2: Post — Input: Lighting"]
+  A --> B
+  A --> C
+  A --> D
 ```
 
 ---

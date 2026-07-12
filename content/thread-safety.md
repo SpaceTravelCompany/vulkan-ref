@@ -121,13 +121,17 @@ Thread B: { std::lock_guard lk(queueMutex); vkQueueSubmit(queue, ...); }
 
 또는 **dedicated submit thread**를 두고, 다른 스레드들은 커맨드 버퍼 기록만 담당하게 하는 패턴이 일반적이다.
 
-```cmdstack
-Thread 1 → cmd buffer A
-Thread 2 → cmd buffer B
-Thread 3 → cmd buffer C
----
-Submit Thread → vkQueueSubmit
-queue mutex로 보호
+```flowchart
+flowchart TD
+  A["Thread 1 → cmd buffer A"]
+  B["Thread 2 → cmd buffer B"]
+  C["Thread 3 → cmd buffer C"]
+  D["Submit Thread → vkQueueSubmit"]
+  E["queue mutex로 보호"]
+  A --> D
+  B --> D
+  C --> D
+  D --> E
 ```
 
 ---

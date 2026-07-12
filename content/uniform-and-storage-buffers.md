@@ -20,25 +20,21 @@ slug: uniform-and-storage-buffers
 
 ## 1. 큰 그림
 
-```cmdstack
-VkBuffer + VkDeviceMemory  (이미 생성됨, memory 문서 참고)
----
-VkDescriptorSetLayoutBinding:
-  binding = 0
-  descriptorType = UNIFORM_BUFFER | STORAGE_BUFFER | *_DYNAMIC | *_TEXEL_BUFFER | INLINE_UNIFORM_BLOCK
-  descriptorCount = N
-  stageFlags = VS | FS | CS | ...
----
-VkDescriptorPool (해당 타입 슬롯 N개)
----
-vkAllocateDescriptorSets
----
-VkDescriptorBufferInfo { buffer, offset, range }
-vkUpdateDescriptorSets  // 또는 VkCopyDescriptorSets, update template
----
-vkCmdBindDescriptorSets (..., dynamicOffsetCount, pDynamicOffsets)
----
-셰이더: layout(set, binding) uniform UBO { ... } | buffer SSBO { ... }
+```flowchart
+flowchart TD
+  A["VkBuffer + VkDeviceMemory (이미 생성됨, memory 문서 참고)"]
+  B["VkDescriptorSetLayoutBinding:"]
+  C["binding = 0"]
+  D["descriptorType = UNIFORM_BUFFER | STORAGE_BUFFER | *_DYNAMIC | *_TEXEL_BUFFER | INLINE_UNIFORM_BLOCK"]
+  E["descriptorCount = N"]
+  F["stageFlags = VS | FS | CS | ..."]
+  G["VkDescriptorPool (해당 타입 슬롯 N개)"]
+  H(["vkAllocateDescriptorSets"])
+  I["VkDescriptorBufferInfo { buffer, offset, range }"]
+  J(["vkUpdateDescriptorSets — 또는 VkCopyDescriptorSets, update template"])
+  K(["vkCmdBindDescriptorSets (..., dynamicOffsetCount, pDynamicOffsets)"])
+  L["셰이더: layout(set, binding) uniform UBO { ... } | buffer SSBO { ... }"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L
 ```
 
 **핵심 포인트:**

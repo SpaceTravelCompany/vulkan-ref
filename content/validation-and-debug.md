@@ -20,25 +20,26 @@ Vulkan은 명시적 API라 잘못 써도 GPU가 조용히 작동할 수 있다. 
 
 ## 1. 큰 그림
 
-```cmdstack
-VkInstance 생성 시 VK_EXT_debug_utils + VK_LAYER_KHRONOS_validation 요청
----
-pNext: VkDebugUtilsMessengerCreateInfoEXT  // 인스턴스 destroy까지 모든 메시지 수신
-pNext: VkValidationFeaturesEXT              // best practices, sync validation 켜기
----
-vkCreateInstance
----
-[vkDestroyInstance까지] 콜백으로 메시지 수신
-  messageSeverity: ERROR + WARNING + INFO
-  messageType:     VALIDATION + GENERAL + PERFORMANCE
----
-(개별 객체에 이름)
-vkSetDebugUtilsObjectNameEXT(VK_OBJECT_TYPE_IMAGE, handle, "HDR_Target")
----
-(커맨드 버퍼에 라벨)
-vkCmdBeginDebugUtilsLabelEXT(cmd, "Shadow Pass", color)
-... draw ...
-vkCmdEndDebugUtilsLabelEXT(cmd)
+```flowchart
+flowchart TD
+  A["VkInstance 생성 시 VK_EXT_debug_utils + VK_LAYER_KHRONOS_validation 요청"]
+  B["pNext: VkDebugUtilsMessengerCreateInfoEXT — 인스턴스 destroy까지 모든 메시지 수신"]
+  C["pNext: VkValidationFeaturesEXT — best practices, sync validation 켜기"]
+  D(["vkCreateInstance"])
+  E["[vkDestroyInstance까지] 콜백으로 메시지 수신"]
+  F["messageSeverity: ERROR + WARNING + INFO"]
+  G["messageType: VALIDATION + GENERAL + PERFORMANCE"]
+  H["(개별 객체에 이름)"]
+  I(["vkSetDebugUtilsObjectNameEXT(VK_OBJECT_TYPE_IMAGE, handle, HDR_Target)"])
+  J["(커맨드 버퍼에 라벨)"]
+  K(["vkCmdBeginDebugUtilsLabelEXT(cmd, Shadow Pass, color)"])
+  L["... draw ..."]
+  M(["vkCmdEndDebugUtilsLabelEXT(cmd)"])
+  A --> B --> C --> D --> E
+  E --> F
+  E --> G
+  E --> H --> I
+  I --> J --> K --> L --> M
 ```
 
 **핵심 포인트:**

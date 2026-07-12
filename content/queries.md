@@ -20,22 +20,25 @@ Vulkan에서 **GPU가 측정한 값을 CPU로 가져오는 통로**가 `VkQueryP
 
 ## 1. 큰 그림
 
-```cmdstack
-VkQueryPool 생성 (type, count)
----
-[vkCmdResetQueryPool]  // 선택
----
-영역:
-  vkCmdBeginQuery (occlusion / pipeline_statistics)
-  ... draw/dispatch ...
-  vkCmdEndQuery
-또는:
-  vkCmdWriteTimestamp (timestamp)
----
-vkQueueSubmit + fence
----
-CPU가 결과 읽기:
-  vkGetQueryPoolResults(pool, flags)
+```flowchart
+flowchart TD
+  A["VkQueryPool 생성 (type, count)"]
+  B["[vkCmdResetQueryPool] — 선택"]
+  C["영역:"]
+  D(["vkCmdBeginQuery (occlusion / pipeline_statistics)"])
+  E["... draw/dispatch ..."]
+  F(["vkCmdEndQuery"])
+  G["또는:"]
+  H(["vkCmdWriteTimestamp (timestamp)"])
+  I(["vkQueueSubmit + fence"])
+  J["CPU가 결과 읽기:"]
+  K(["vkGetQueryPoolResults(pool, flags)"])
+  A --> B --> C
+  C --> D --> E --> F
+  C --> G --> H
+  F --> I
+  H --> I
+  I --> J --> K
 ```
 
 **핵심 포인트:**

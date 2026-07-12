@@ -171,14 +171,12 @@ Event는 **동일 큐 안에서** 커맨드 버퍼 내의 특정 지점에 **신
 
 **Pipeline Barrier**는 barrier를 기준으로 위/아래를 나눈다:
 
-```cmdstack
-vkCmdDraw(A) ← COLOR_OUTPUT
----
-vkCmdPipelineBarrier(
-  src=COLOR_ATTACHMENT_OUTPUT,
-  dst=COMPUTE_SHADER)
----
-vkCmdDispatch(B) ← COMPUTE_SHADER
+```flowchart
+flowchart TD
+  A(["vkCmdDraw(A) — COLOR_OUTPUT"])
+  B(["vkCmdPipelineBarrier(src=COLOR_ATTACHMENT_OUTPUT, dst=COMPUTE_SHADER)"])
+  C(["vkCmdDispatch(B) — COMPUTE_SHADER"])
+  A --> B --> C
 ```
 
 → barrier 위(A)가 다 끝나야 barrier 아래(B)가 시작된다.
@@ -187,17 +185,20 @@ vkCmdDispatch(B) ← COMPUTE_SHADER
 
 **Event**는 set과 wait가 분리되어 있다:
 
-```cmdstack
-vkCmdDraw(A) ← COLOR_OUTPUT
-vkCmdSetEvent(event, COLOR_OUTPUT) ← A 끝!
----
-vkCmdDraw(C) ← A랑 상관없는 작업 (기다리지 않고 실행)
-vkCmdDraw(D) ← A랑 상관없는 작업 (기다리지 않고 실행)
----
-vkCmdWaitEvents(..., event,
-  src=COLOR_OUTPUT, dst=COMPUTE) ← A 끝날 때까지 기다림
----
-vkCmdDispatch(B) ← COMPUTE_SHADER
+```flowchart
+flowchart TD
+  A(["vkCmdDraw(A) — COLOR_OUTPUT"])
+  B(["vkCmdSetEvent(event, COLOR_OUTPUT) — A 끝!"])
+  C(["vkCmdDraw(C) — A랑 상관없는 작업 (기다리지 않고 실행)"])
+  D(["vkCmdDraw(D) — A랑 상관없는 작업 (기다리지 않고 실행)"])
+  E(["vkCmdWaitEvents(..., event, src=COLOR_OUTPUT, dst=COMPUTE) — A 끝날 때까지 기다림"])
+  F(["vkCmdDispatch(B) — COMPUTE_SHADER"])
+  A --> B
+  B --> C
+  B --> D
+  C --> E
+  D --> E
+  E --> F
 ```
 
 → A가 끝나면 **event만 신호**되고, 그 이후 C, D는 A를 기다리지 않고 바로 실행된다.
@@ -708,15 +709,20 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 
 ## 14. 타임라인 예제 (Triple Buffering + Swapchain)
 
-```cmdstack
-CPU: Frame N 제출 → Fence[N] 대기 → Frame N+1 제출 → ...
----
-GPU: Frame N → Frame N+1 → Frame N+2 (파이프라인)
-Frame N: 렌더링 → 프레젠트
-Frame N+1: 렌더링 → 프레젠트
----
-Sem: imgAvail[N], renderDone[N], ...
-Fence: f[N]↑, f[N+1]↑, ...
+```flowchart
+flowchart TD
+  A["CPU: Frame N 제출 → Fence[N] 대기 → Frame N+1 제출 → ..."]
+  B["GPU: Frame N → Frame N+1 → Frame N+2 (파이프라인)"]
+  C["Frame N: 렌더링 → 프레젠트"]
+  D["Frame N+1: 렌더링 → 프레젠트"]
+  E["Sem: imgAvail[N], renderDone[N], ..."]
+  F["Fence: f[N]↑, f[N+1]↑, ..."]
+  A --> B
+  B --> C
+  B --> D
+  C --> E
+  D --> E
+  E --> F
 ```
 
 - `vkAcquireNextImageKHR` → `imageAvailable` semaphore signal
@@ -730,16 +736,14 @@ Fence: f[N]↑, f[N+1]↑, ...
 
 배리어는 **필요한 만큼만** 쓴다. 과도한 배리어는 GPU 스톨을 만든다.
 
-```cmdstack
-최적화 원칙
----
-필요한 최소 스테이지만 포함
----
-VK_DEPENDENCY_BY_REGION_BIT ← 영역 한정 배리어
----
-Render Pass 내부는 framebuffer-space 스테이지만
----
-불필요한 레이아웃 전환 최소화
+```flowchart
+flowchart TD
+  A["최적화 원칙"]
+  B["필요한 최소 스테이지만 포함"]
+  C["VK_DEPENDENCY_BY_REGION_BIT — 영역 한정 배리어"]
+  D["Render Pass 내부는 framebuffer-space 스테이지만"]
+  E["불필요한 레이아웃 전환 최소화"]
+  A --> B --> C --> D --> E
 ```
 
 - **`vkCmdPipelineBarrier`**: `srcStageMask` / `dstStageMask`를 가능한 좁게

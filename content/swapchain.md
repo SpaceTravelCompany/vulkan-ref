@@ -20,22 +20,19 @@ slug: swapchain
 
 ## 1. 큰 그림
 
-```cmdstack
-VkSurfaceKHR ← OS 윈도우 핸들에서 생성 (VK_KHR_surface + VK_KHR_win32_surface 등)
----
-vkGetPhysicalDeviceSurfaceSupportKHR  // graphics 큐가 present를 지원하는지
-vkGetPhysicalDeviceSurfaceCapabilitiesKHR
-vkGetPhysicalDeviceSurfaceFormatsKHR
-vkGetPhysicalDeviceSurfacePresentModesKHR
----
-VkSwapchainKHR + presentable image N장  // vkCreateSwapchainKHR
----
-[매 프레임]
-vkAcquireNextImageKHR        // image index 획득
----
-vkQueueSubmit (그리기)
----
-vkQueuePresentKHR            // 화면에 표시 요청
+```flowchart
+flowchart TD
+  A["VkSurfaceKHR — OS 윈도우 핸들에서 생성 (VK_KHR_surface + VK_KHR_win32_surface 등)"]
+  B(["vkGetPhysicalDeviceSurfaceSupportKHR — graphics 큐가 present를 지원하는지"])
+  C(["vkGetPhysicalDeviceSurfaceCapabilitiesKHR"])
+  D(["vkGetPhysicalDeviceSurfaceFormatsKHR"])
+  E(["vkGetPhysicalDeviceSurfacePresentModesKHR"])
+  F["VkSwapchainKHR + presentable image N장 — vkCreateSwapchainKHR"]
+  G["[매 프레임]"]
+  H(["vkAcquireNextImageKHR — image index 획득"])
+  I(["vkQueueSubmit (그리기)"])
+  J(["vkQueuePresentKHR — 화면에 표시 요청"])
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
 **핵심 포인트:**

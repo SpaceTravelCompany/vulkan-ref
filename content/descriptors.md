@@ -16,25 +16,33 @@ slug: descriptors
 
 ## 1. 큰 그림
 
-```cmdstack
-VkDescriptorSetLayout ← 이런 바인딩이 필요하다
-binding 0: uniform buffer (vertex shader)
-binding 1: combined image sampler (frag)
----
-VkPipelineLayout ← 파이프라인에 이 layout을 쓴다
-set 0 layout: 위의 DescriptorSetLayout
-set 1 layout: 다른 DescriptorSetLayout
-push constant range
----
-VkPipeline ← 셰이더 코드에서 binding 접근 · 파이프라인 생성 시 넘김
----
-VkDescriptorPool ← descriptor를 할당할 풀
----
-VkDescriptorSet ← 실제 GPU 리소스를 담은 set
-binding 0: 특정 VkBuffer + offset
-binding 1: 특정 VkImageView + VkSampler
----
-vkCmdBindDescriptorSets() ← 드로우 시 전달
+```flowchart
+flowchart TD
+  A["VkDescriptorSetLayout — 이런 바인딩이 필요하다"]
+  B["binding 0: uniform buffer (vertex shader)"]
+  C["binding 1: combined image sampler (frag)"]
+  D["VkPipelineLayout — 파이프라인에 이 layout을 쓴다"]
+  E["set 0 layout: 위의 DescriptorSetLayout"]
+  F["set 1 layout: 다른 DescriptorSetLayout"]
+  G["push constant range"]
+  H["VkPipeline — 셰이더 코드에서 binding 접근 · 파이프라인 생성 시 넘김"]
+  I["VkDescriptorPool — descriptor를 할당할 풀"]
+  J["VkDescriptorSet — 실제 GPU 리소스를 담은 set"]
+  K["binding 0: 특정 VkBuffer + offset"]
+  L["binding 1: 특정 VkImageView + VkSampler"]
+  M(["vkCmdBindDescriptorSets() — 드로우 시 전달"])
+  A --> B
+  A --> C
+  A --> D
+  D --> E
+  D --> F
+  D --> G
+  D --> H
+  H --> I
+  I --> J
+  J --> K
+  J --> L
+  J --> M
 ```
 
 결국 순서는 다음과 같다:

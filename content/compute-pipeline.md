@@ -146,23 +146,29 @@ groupCountX × groupCountY × groupCountZ × local_size_x × local_size_y × loc
 
 > **왜 workgroup으로 나눌까?** GPU는 수천 개의 스레드를 동시에 실행한다. 이들을 하나의 그룹으로 묶으면, 그룹 내에서 **공유 메모리**나 **배리어 동기화**를 사용할 수 있다. 반대로 다른 그룹끼리는 완전히 독립적으로 실행된다.
 
-```cmdstack
-Dispatch
----
-Workgroup (0,0,0) ─ 256 threads
-├── LocalInvocation 0 ─ gl_GlobalInvocationID = (0,0,0)
-├── LocalInvocation 1 ─ gl_GlobalInvocationID = (1,0,0)
-├── ...
-└── LocalInvocation 255
----
-Workgroup (1,0,0) ─ 256 threads
-└── ...
----
-Workgroup (2,0,0)
----
-Workgroup (3,0,0)
----
-총 4 × 256 = 1024 invocations
+```flowchart
+flowchart TD
+  A(["Dispatch"])
+  B["Workgroup (0,0,0) — 256 threads"]
+  C["LocalInvocation 0 — gl_GlobalInvocationID = (0,0,0)"]
+  D["LocalInvocation 1 — gl_GlobalInvocationID = (1,0,0)"]
+  E["..."]
+  F["LocalInvocation 255"]
+  G["Workgroup (1,0,0) — 256 threads"]
+  H["..."]
+  I["Workgroup (2,0,0)"]
+  J["Workgroup (3,0,0)"]
+  K["총 4 × 256 = 1024 invocations"]
+  A --> B
+  B --> C
+  B --> D
+  B --> E
+  B --> F
+  B --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
 ```
 
 **각 invocation은 독립적으로 실행**되지만, 같은 workgroup 안에서는 다음이 가능:

@@ -30,15 +30,15 @@ vkCmdDraw(cmd, vertexCount, 1, firstVertex, firstInstance);
 
 그래픽스 파이프라인 드로우는 **활성 렌더 패스 안**에서만 유효하다.
 
-```cmdstack
-vkCmdBeginRenderPass / vkCmdBeginRendering ← 필수
----
-vkCmdBindPipeline(GRAPHICS)
-vkCmdBindVertexBuffers / vkCmdBindIndexBuffer
-vkCmdBindDescriptorSets
-vkCmdDraw(...)
----
-vkCmdEndRenderPass / vkCmdEndRendering
+```flowchart
+flowchart TD
+  A(["vkCmdBeginRenderPass / vkCmdBeginRendering — 필수"])
+  B(["vkCmdBindPipeline(GRAPHICS)"])
+  C(["vkCmdBindVertexBuffers / vkCmdBindIndexBuffer"])
+  D(["vkCmdBindDescriptorSets"])
+  E(["vkCmdDraw(...)"])
+  F(["vkCmdEndRenderPass / vkCmdEndRendering"])
+  A --> B --> C --> D --> E --> F
 ```
 
 - Dynamic Rendering(`vkCmdBeginRendering`)을 쓰면 attachment `imageView`·`loadOp`·`storeOp`가 올바른지 확인
@@ -49,10 +49,12 @@ vkCmdEndRenderPass / vkCmdEndRendering
 
 ## 3. 파이프라인 & 뷰포트
 
-```cmdstack
-vkCmdBindPipeline(cmd, GRAPHICS, pipeline) ← 필수
-vkCmdSetViewport / vkCmdSetScissor ← dynamic state면 필수
-vkCmdDraw(...)
+```flowchart
+flowchart TD
+  A(["vkCmdBindPipeline(cmd, GRAPHICS, pipeline) — 필수"])
+  B(["vkCmdSetViewport / vkCmdSetScissor — dynamic state면 필수"])
+  C(["vkCmdDraw(...)"])
+  A --> B --> C
 ```
 
 - 파이프라인이 **GRAPHICS** 바인드 포인트인지
@@ -75,14 +77,13 @@ vkCmdDraw(...)
 
 셰이더가 UBO·텍스처·샘플러를 읽는다면:
 
-```cmdstack
-VkDescriptorSetLayout 정의
----
-VkDescriptorSet 할당 + vkUpdateDescriptorSets
----
-vkCmdBindDescriptorSets(cmd, ..., pipelineLayout)
----
-vkCmdDraw
+```flowchart
+flowchart TD
+  A["VkDescriptorSetLayout 정의"]
+  B(["VkDescriptorSet 할당 + vkUpdateDescriptorSets"])
+  C(["vkCmdBindDescriptorSets(cmd, ..., pipelineLayout)"])
+  D(["vkCmdDraw"])
+  A --> B --> C --> D
 ```
 
 - `set` / `binding` 번호가 GLSL `layout(set=, binding=)`와 일치
@@ -102,14 +103,13 @@ vkCmdDraw
 
 ## 7. 동기화 & 제출
 
-```cmdstack
-vkAcquireNextImageKHR ← 스왑체인 이미지 획득
----
-커맨드 버퍼 기록 (렌더링)
----
-vkQueueSubmit ← semaphore/fence
----
-vkQueuePresentKHR
+```flowchart
+flowchart TD
+  A(["vkAcquireNextImageKHR — 스왑체인 이미지 획득"])
+  B["커맨드 버퍼 기록 (렌더링)"]
+  C(["vkQueueSubmit — semaphore/fence"])
+  D(["vkQueuePresentKHR"])
+  A --> B --> C --> D
 ```
 
 - 커맨드 버퍼를 `vkEndCommandBuffer` 후 `vkQueueSubmit` 했는지

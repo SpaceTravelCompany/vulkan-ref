@@ -24,33 +24,24 @@ Vulkan 그래픽스 파이프라인은 다음과 같은 **고정 함수 유닛(F
 
 > **흐름 이해**: 버텍스 버퍼 → 정점 처리 → 래스터화(삼각형을 픽셀로) → 프래그먼트 처리 → 색상 출력. 이 흐름을 따라가면서 각 단계가 어떻게 설정되는지 보면 이해하기 쉽다.
 
-```cmdstack
-Vertex Input Buffer
----
-vertex input (VB/IB → 속성) ← VkPipelineVertexInputStateCreateInfo · 고정
----
-input assembly (정점 → 프리미티브) ← VkPipelineInputAssemblyStateCreateInfo · 고정
----
-vertex shader ← 프로그래머블
----
-tessellation (옵션) ← VkPipelineTessellationStateCreateInfo · 고정
-control shader ← 프로그래머블
-evaluation shader ← 프로그래머블
----
-geometry shader (옵션) ← 프로그래머블
----
-rasterization (정점 → 프래그먼트) ← VkPipelineRasterizationStateCreateInfo · 고정
-cull mode, front face, depth bias, polygon mode
----
-multisampling (MSAA) ← VkPipelineMultisampleStateCreateInfo · 고정
----
-depth/stencil ← VkPipelineDepthStencilStateCreateInfo · 고정
----
-fragment shader ← 프로그래머블
----
-color blending ← VkPipelineColorBlendStateCreateInfo · 고정
----
-Framebuffer
+```flowchart
+flowchart TD
+  A["Vertex Input Buffer"]
+  B["vertex input (VB/IB → 속성) — VkPipelineVertexInputStateCreateInfo · 고정"]
+  C["input assembly (정점 → 프리미티브) — VkPipelineInputAssemblyStateCreateInfo · 고정"]
+  D["vertex shader — 프로그래머블"]
+  E["tessellation (옵션) — VkPipelineTessellationStateCreateInfo · 고정"]
+  F["control shader — 프로그래머블"]
+  G["evaluation shader — 프로그래머블"]
+  H["geometry shader (옵션) — 프로그래머블"]
+  I["rasterization (정점 → 프래그먼트) — VkPipelineRasterizationStateCreateInfo · 고정"]
+  J["cull mode, front face, depth bias, polygon mode"]
+  K["multisampling (MSAA) — VkPipelineMultisampleStateCreateInfo · 고정"]
+  L["depth/stencil — VkPipelineDepthStencilStateCreateInfo · 고정"]
+  M["fragment shader — 프로그래머블"]
+  N["color blending — VkPipelineColorBlendStateCreateInfo · 고정"]
+  O["Framebuffer"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M --> N --> O
 ```
 
 스펙(10.4. Graphics Pipelines)은 이 상태들을 4개의 **논리적 그룹**으로 나눈다:
