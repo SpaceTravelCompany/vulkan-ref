@@ -96,5 +96,4 @@ slug: new-topic
 
 ## 라이선스
 
-- 문서/콘텐츠: [CC BY-NC-SA 4.0](LICENSE)
-- 빌더(topic-pages): [MIT](https://github.com/SpaceTravelCompany/topic-pages/blob/main/LICENSE)
+[MIT](LICENSE)
