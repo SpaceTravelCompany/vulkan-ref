@@ -86,7 +86,7 @@ typedef struct VkQueryPoolCreateInfo {
 
 ### 2.2. `flags` — `RESET_BIT_KHR`
 
-`VK_QUERY_POOL_CREATE_RESET_BIT_KHR` (`VK_KHR_maintenance9`, 또는 1.4+): 풀 생성 시 모든 쿼리를 초기화. **첫 사용 전 `vkCmdResetQueryPool` 호출 불필요.** 풀 재사용 패턴에서 매번 reset 안 해도 됨.
+`VK_QUERY_POOL_CREATE_RESET_BIT_KHR` (`VK_KHR_maintenance9`): 풀 생성 시 모든 쿼리를 초기화. **첫 사용 전 `vkCmdResetQueryPool` 호출 불필요.** 풀 재사용 패턴에서 매번 reset 안 해도 됨.
 
 ---
 
@@ -130,16 +130,13 @@ vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pool, 0);  // 시작
 // ... draws ...
 vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, 1);  // 끝
 
-// 1.3+ sync2: VkPipelineStageFlagBits2
-vkCmdWriteTimestamp2(cmd, &(VkWriteTimestampInfo2){
-    .sType = VK_STRUCTURE_TYPE_WRITE_TIMESTAMP_INFO_2,
-    .stage = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-    .queryPool = pool,
-    .query = 0,
-}, cmd);  // ⚠ vkCmdWriteTimestamp2는 (cmd, *pInfo)가 아니라 (cmd, *pInfo, cmd) 두 cmd
+// 1.3+ sync2: VkPipelineStageFlagBits2 (stage는 64비트 마스크)
+vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, pool, 0);  // 시작
+// ... draws ...
+vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, pool, 1);  // 끝
 ```
 
-> **NOTE** 실제로는 `vkCmdWriteTimestamp2(commandBuffer, pWriteTimestampInfo)` — 한 cmd만 받음. 위 예시는 단순화. 정확한 시그니처는 `void vkCmdWriteTimestamp2(VkCommandBuffer, const VkWriteTimestampInfo2*)`.
+> **시그니처** `void vkCmdWriteTimestamp2(VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage, VkQueryPool queryPool, uint32_t query)` — legacy와 달리 stage가 64비트(`VkPipelineStageFlagBits2`)이고, `VkWriteTimestampInfo2` 같은 구조체는 쓰지 않는다.
 
 > **스펙 원문 (VUID-vkCmdWriteTimestamp-pipelineStage-04075 ... 04080)** timestamp stage는 디바이스에서 활성화되지 않은 pipeline stage를 포함할 수 없음 (geometryShader, tessellationShader, conditionalRendering, fragmentDensityMap, transformFeedback, meshShader, taskShader, shadingRateImage, rayTracingPipeline 등).
 >> `vkGetPhysicalDeviceFeatures`/extension 활성화 안 한 stage는 timestamp에도 못 씀.
@@ -152,7 +149,7 @@ vkCmdWriteTimestamp2(cmd, &(VkWriteTimestampInfo2){
 - 반환값은 GPU 내부 카운터 (나노초는 **아님**)
 - 비교는 같은 디바이스의 timestamp끼리만 의미 있음
 - 진짜 나노초로 환산: `(t1 - t0) * timestampPeriod / 1e9` (나노초)
-- `timestampPeriod`는 `VkPhysicalDeviceLimits::timestampPeriod` (나노초 per tick, 보통 1)
+- `timestampPeriod`는 `VkPhysicalDeviceLimits::timestampPeriod` (나노초 per tick, 디바이스마다 다름)
 
 ```c
 float period = props.limits.timestampPeriod;  // ns per tick

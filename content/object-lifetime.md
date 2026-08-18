@@ -152,7 +152,7 @@ vkDeviceWaitIdle(device);  // 모든 큐의 모든 작업 완료까지 blocking
 - [ ] **Pipeline보다 먼저** pipeline layout 파괴 (pipeline이 layout 참조 중).
 - [ ] **Pipeline Layout보다 먼저** descriptor set layout 파괴 (layout이 set layout 참조 중).
 - [ ] **Graphics pipeline library subset** (`VK_GRAPHICS_PIPELINE_LIBRARY_*_BIT_EXT`로 생성한 라이브러리 파이프라인) 파괴 — 메인 파이프라인이 여전히 참조 중일 때 파괴하면 메인 invalid.
-- [ ] **DescriptorSet을 Free하지 않고** DescriptorPool을 Destroy → set이 pool보다 먼저 free되어야 함. `vkFreeDescriptorSets` 후 `vkDestroyDescriptorPool`이 정확한 순서.
+- [ ] **DescriptorSet을 Free하지 않고** DescriptorPool을 Destroy → 스펙상 pool 파괴 시 set이 암묵적으로 free되므로 **엄밀한 순서 위반은 아니다.** 단, 개별 set을 명시적으로 해제하려면 `vkFreeDescriptorSets`(pool에 `FREE_DESCRIPTOR_SET_BIT` 필요) 후 `vkDestroyDescriptorPool`이 의도가 명확하다.
 - [ ] **VkDeviceMemory보다 먼저** memory에 bind된 buffer/image 파괴 안 함 → memory에 dangling reference.
 
 ### 4.2. GPU 동기화
@@ -182,7 +182,7 @@ vkDeviceWaitIdle(device);  // 모든 큐의 모든 작업 완료까지 blocking
 
 - [ ] `VK_NULL_HANDLE`에 대해 destroy 호출 → 보통 no-op이지만, if guard 없이 반복 호출 시 로그 스팸.
 - [ ] `vkDestroy*` 계열 함수는 **호스트 동기화 필요**. 멀티스레드 시 mutex로 보호.
-- [ ] `vkFreeDescriptorSets` 없이 `vkDestroyDescriptorPool` → sets 자동 정리되지만, 암시적 정리는 디버깅 힘듦.
+- [ ] `vkFreeDescriptorSets` 없이 `vkDestroyDescriptorPool` → sets는 **자동 정리**되지만(스펙 보장), 암시적 정리는 디버깅 힘듦. 명시적 free를 하려면 pool에 `FREE_DESCRIPTOR_SET_BIT` 필요.
 - [ ] `vkDestroyPipelineCache` 없이 device destroy → cache 데이터 소실. 의도적이면 save 먼저.
 
 **PipelineCache 저장 패턴**:
@@ -207,7 +207,8 @@ void shutdown() {
     // 0) 모든 GPU 작업 완료
     vkDeviceWaitIdle(device);
 
-    // 1) descriptor sets (free)
+    // 1) descriptor sets (free) — pool에 FREE_DESCRIPTOR_SET_BIT 필요.
+    //    없으면 이 호출을 생략하고 pool destroy가 sets를 암묵적으로 정리.
     vkFreeDescriptorSets(device, descriptorPool, 1, &descriptorSet);
 
     // 2) command buffers (free) + pool (destroy)

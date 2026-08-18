@@ -143,14 +143,17 @@ vkCmdDrawMeshTasksIndirectEXT(
 #version 460
 #extension GL_EXT_mesh_shader : require
 layout(local_size_x = 32) in;
-taskPayloadSharedEXT uint payload;
+
+// payload는 구조체 하나만 넘길 수 있다 (TaskPayloadWorkgroupEXT storage class)
+taskPayloadSharedEXT struct Payload {
+    uint visibleCount;
+} p;
 
 void main() {
     // 컬링 로직 등
-    uint visibleCount = cullCluster(gl_WorkGroupID.x);
-    payload.visibleOffset = compact(gl_WorkGroupID.x, visibleCount);
-    SetMeshOutputsEXT(visibleCount * 3, visibleCount);
-    EmitMeshTasksEXT(visibleCount, 1, 1);
+    p.visibleCount = cullCluster(gl_WorkGroupID.x);
+    // EmitMeshTasksEXT(x, y, z): 3차원으로 mesh workgroup 생성
+    EmitMeshTasksEXT(p.visibleCount, 1, 1);
 }
 
 // Mesh Shader
@@ -159,7 +162,9 @@ void main() {
 layout(local_size_x = 32) in;
 layout(max_vertices = 81, max_primitives = 126) out;
 layout(triangles) out;
-taskPayloadSharedEXT uint payload;
+taskPayloadSharedEXT struct Payload {
+    uint visibleCount;
+} p;
 
 void main() {
     SetMeshOutputsEXT(3, 1);

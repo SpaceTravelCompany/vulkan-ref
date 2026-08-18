@@ -33,7 +33,8 @@ Vulkan 1.3~1.4 및 Roadmap 2024/2026 기준으로 **현대 렌더링 엔진에 �
 
 ### 의존성
 
-- Vulkan 1.0 이상 (독립적)
+- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
+- `VK_KHR_depth_stencil_resolve` 또는 Vulkan 1.2
 
 ### 구조체
 
@@ -231,7 +232,7 @@ vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
+- `VK_KHR_get_physical_device_properties2` + `VK_KHR_maintenance3` 또는 Vulkan 1.1
 
 ### 핵심 기능 플래그
 

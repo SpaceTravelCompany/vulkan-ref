@@ -66,8 +66,8 @@ vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compCI, nullptr, &computePi
 **유효성 규칙:**
 - `stage.stage`는 반드시 `VK_SHADER_STAGE_COMPUTE_BIT`여야 함
 - `layout`의 `VkPipelineLayout`은 셰이더가 사용하는 모든 descriptor / push constant를 포함해야 함
-- `VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`는 `shaderMeshEnqueue` feature 필요
-- `VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV`로 Device-Generated Commands 지원
+- `VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`는 `shaderEnqueue` feature가 꺼져 있으면 쓸 수 없음 (VUID-shaderEnqueue-09177)
+- `VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV`는 `deviceGeneratedComputePipelines` feature 필요 (NV)
 - 메시 셰이더나 레이 트레이싱 관련 flag는 전부 금지
 
 ---
@@ -137,6 +137,26 @@ groupCountX × groupCountY × groupCountZ × local_size_x × local_size_y × loc
 ```
 
 예: `vkCmdDispatch(4, 1, 1)` + `local_size_x = 256` = 1024 invocations
+
+### 4.1. Dispatch / Workgroup 크기 한계
+
+`vkCmdDispatch`와 `local_size_*`는 디바이스 한계 안에 있어야 한다:
+
+| 한계 | 의미 | 일반 값 |
+|------|------|---------|
+| `maxComputeWorkGroupCount[3]` | dispatch의 (x,y,z) 차원별 workgroup 최대 | (65535, 65535, 65535) |
+| `maxComputeWorkGroupSize[3]` | `local_size_*` 차원별 최대 | (1024, 1024, 64) |
+| `maxComputeWorkGroupInvocations` | `local_size_x*y*z` 곱의 최대 | 1024 |
+
+> **스펙 원문 (VUID-vkCmdDispatch-groupCountX-00386..00388)** `groupCountX/Y/Z`는 `maxComputeWorkGroupCount` 이하여야 한다.
+> **(VUID-RuntimeSpirv-x-06429..06432)** `local_size_x*y*z`가 `maxComputeWorkGroupInvocations`를 초과하면 안 되고, 각 차원이 `maxComputeWorkGroupSize`를 넘어도 안 된다.
+
+```c
+VkPhysicalDeviceLimits limits = props.limits;
+// limits.maxComputeWorkGroupCount[0..2]
+// limits.maxComputeWorkGroupSize[0..2]
+// limits.maxComputeWorkGroupInvocations
+```
 
 ---
 
@@ -219,7 +239,7 @@ void main() {
 
 | 패턴 | 예시 |
 |------|------|
- | Reduction | 합계/최대값 구하기 (병렬 반으로 줄이기) |
+| Reduction | 합계/최대값 구하기 (병렬 반으로 줄이기) |
 | Stencil / Convolution | 주변 픽셀 읽기 (tile + halo) |
 | Prefix Sum (Scan) | 병렬 누적 합 |
 | Histogram | 워크그룹별 local histogram → 글로벌 병합 |
@@ -284,8 +304,12 @@ vkCmdPipelineBarrier(cmdBuffer,
 ### 9.1. `VK_KHR_shader_float16_int8` (Vulkan 1.2)
 - FP16 / INT8 데이터 타입 지원. AI/ML 워크로드에서 성능 향상.
 
-### 9.2. `VK_KHR_shader_subgroup_extended_types` (Vulkan 1.2)
-- 셰이더에서 subgroup ballot, shuffle, broadcast 등 활용. workgroup 내보다 더 작은 단위의 동기화.
+### 9.2. Subgroup (VK_KHR_shader_subgroup_*)
+- **Subgroup**은 워크그룹보다 작은 실행 단위(보통 32~64 invocation, warp/wavefront). 같은 subgroup 안에서는 별도 barrier 없이도 볼록하게 실행된다고 보장.
+- `gl_SubgroupID`, `gl_SubgroupInvocationID`, `gl_SubgroupSize`로 인덱스를 얻는다.
+- `VK_KHR_shader_subgroup_extended_types` (1.2): subgroup ballot, shuffle, broadcast 등. `subgroupBarrier()`, `subgroupAdd()`, `subgroupBroadcast()` 등.
+- `VK_KHR_shader_subgroup_ballot` / `VK_KHR_shader_subgroup_vote` (1.1): `subgroupBallot()`, `subgroupAll()` 등.
+- 지원 여부: `VkPhysicalDeviceSubgroupProperties::subgroupSize`, `supportedStages`, `supportedOperations`로 확인.
 
 ### 9.3. `VK_KHR_compute_shader_derivatives`
 - 컴퓨트 셰이더에서 `dFdx` / `dFdy` 등 그래픽스 전용 함수 사용 가능.

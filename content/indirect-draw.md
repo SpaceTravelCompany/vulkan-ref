@@ -29,7 +29,7 @@ typedef struct VkDrawIndexedIndirectCommand {
     uint32_t    instanceCount;   // 인스턴스 개수 (보통 1)
     uint32_t    firstIndex;      // index buffer 안의 첫 인덱스 오프셋
     int32_t     vertexOffset;    // 인덱스에 더해지는 정점 오프셋 (signed!)
-    uint32_t    firstInstance;   // gl_InstanceIndex의 시작 값 (1.2+)
+    uint32_t    firstInstance;   // gl_InstanceIndex의 시작 값 (drawIndirectFirstInstance feature 필요)
 } VkDrawIndexedIndirectCommand;  // 20 bytes
 ```
 
@@ -40,7 +40,7 @@ typedef struct VkDrawIndirectCommand {
     uint32_t    vertexCount;     // 정점 개수
     uint32_t    instanceCount;   // 인스턴스 개수 (보통 1)
     uint32_t    firstVertex;     // 첫 정점 오프셋
-    uint32_t    firstInstance;   // gl_InstanceIndex의 시작 값 (1.2+)
+    uint32_t    firstInstance;   // gl_InstanceIndex의 시작 값 (drawIndirectFirstInstance feature 필요)
 } VkDrawIndirectCommand;         // 16 bytes
 ```
 
@@ -93,9 +93,9 @@ supportsMultiDrawIndirect && maxDrawIndirectCount > 1
 
 ## 3. firstInstance와 drawIndirectFirstInstance (1.1 제약)
 
-indirect 구조체의 `firstInstance`를 0이 아닌 값으로 쓰려면 **`drawIndirectFirstInstance`** feature(Vulkan 1.2 코어)가 필요하다. **Vulkan 1.1에서는 `firstInstance`가 항상 0**이어야 한다.
+indirect 구조체의 `firstInstance`를 0이 아닌 값으로 쓰려면 **`drawIndirectFirstInstance`** feature가 필요하다 (`VkPhysicalDeviceFeatures`의 멤버, 1.0부터 존재. `VK_KHR_shader_draw_parameters`와 무관). **이 feature가 없으면 `firstInstance`는 항상 0**이어야 한다.
 
-- Vulkan 1.1 최소 타깃이라면 `firstInstance`에 **인스턴스/드로우 인덱스를 넣지 말 것**.
+- Vulkan 1.1 최소 타깃이라면 `drawIndirectFirstInstance` 지원 여부를 조회하고, 미지원이면 `firstInstance`에 **인스턴스/드로우 인덱스를 넣지 말 것**.
 - 대신 드로우 인덱스를 셰이더에 전달하는 다른 통로가 필요하다.
 
 ### 3.1. 드로우 인덱스를 셰이더로 — push constant + gl_DrawID
@@ -105,7 +105,7 @@ indirect 구조체의 `firstInstance`를 0이 아닌 값으로 쓰려면 **`draw
 | 통로 | 방법 | 조건 |
 |------|------|------|
 | **push constant** | `drawBase`(배치 시작 인덱스)를 `vkCmdPushConstants`로 배치당 1회 push | Vulkan 1.0+ |
-| **gl_DrawID / SV_DrawIndex** | non-indexed indirect 드로우에서 현재 draw 인덱스를 셰이더가 직접 읽음 | `shaderDrawParameters` feature (Vulkan 1.1 코어) |
+| **gl_DrawID / SV_DrawIndex** | 간접 드로우에서 현재 draw 인덱스를 셰이더가 직접 읽음 | `shaderDrawParameters` feature (Vulkan 1.1 코어) |
 
 실전 조합: **push constant `drawBase` + 셰이더의 드로우 인덱스**를 더해 per-draw 슬롯을 계산한다.
 
@@ -115,12 +115,12 @@ uint slot = drawBase + gl_DrawID;   // GLSL
 // HLSL/DXIL: SV_DrawIndex
 ```
 
-- `gl_DrawID`는 **non-indexed** 간접 드로우에서만 유효하다 (indexed는 지원하지 않음 — `shaderDrawParameters`의 명시적 제한).
+- `gl_DrawID`(`DrawIndex` 빌트인)는 **indexed / non-indexed 간접 드로우 모두**에서 유효하다. 값은 간접 드로우의 실행 순번(0부터 drawCount-1까지 1씩 증가)이다. 정점/메시/태스크 셰이더에서만 읽을 수 있다.
 - 배치(`drawCount=N`)일 땐 `drawBase`를 배치 시작 슬롯으로 한 번만 push, 단일 폴백일 땐 드로우마다 push.
 
 ### 3.2. 최소 타깃 Vulkan 1.1
 
-`appInfo.apiVersion = VK_API_VERSION_1_1`로 최소 타깃을 고정하면 `shaderDrawParameters`(1.1 코어)는 확보되고, `drawIndirectFirstInstance`(1.2)는 쓰지 못한다는 전제가 명확해진다. 이 경계를 코드에 일관되게 유지하는 게 중요하다.
+`appInfo.apiVersion = VK_API_VERSION_1_1`로 최소 타깃을 고정하면 `shaderDrawParameters`(1.1 코어)는 확보된다. 반면 `drawIndirectFirstInstance`는 버전 승격이 아니라 `VkPhysicalDeviceFeatures`의 독립 feature이므로, **버전만으로 지원이 보장되지 않고 반드시 조회해야 한다**. 이 경계를 코드에 일관되게 유지하는 게 중요하다.
 
 ---
 
@@ -241,8 +241,8 @@ layout(set = 3, binding = 0) buffer PerDrawBuffer {
 - [ ] 복사 후 **배리어 누락** (또는 src/dst access를 읽기로 잘못) → 드로우가 복사 결과를 못 봄.
 - [ ] `multiDrawIndirect` 조회 없이 `drawCount > 1` → 미지원 장치에서 오류.
 - [ ] `maxDrawIndirectCount` 무시 → 값이 1인 장치(Mali pre-G710)에서 멀티 드로우 실패.
-- [ ] Vulkan 1.1에서 `firstInstance != 0` → `drawIndirectFirstInstance` 미지원.
-- [ ] `gl_DrawID`/`SV_DrawIndex`를 **indexed** 간접 드로우에서 사용 → 미지원.
+- [ ] `drawIndirectFirstInstance` 미지원인데 `firstInstance != 0` → VUID-firstInstance-00501/00554.
+- [ ] `gl_DrawID`/`SV_DrawIndex`를 **직접(non-indirect) 드로우**에서 사용 → 직접 드로우에서는 항상 0. 간접 드로우에서만 순번을 갖는다.
 - [ ] indirect 버퍼 offset·stride가 4바이트 배수 아님.
 - [ ] per-draw SSBO grow 시 **descriptor 재갱신 누락** → 이전(작은) 버퍼를 계속 참조.
 - [ ] host-visible staging을 `HOST_COHERENT` 없이 쓰고 flush 누락 → GPU가 쓴 데이터를 못 봄.

@@ -389,7 +389,7 @@ finalColor.rgb = (srcColorBlendFactor × srcColor) colorBlendOp (dstColorBlendFa
 finalColor.a   = (srcAlphaBlendFactor × srcAlpha) alphaBlendOp (dstAlphaBlendFactor × dstAlpha)
 ```
 
-**LogicOp:** `VK_TRUE`면 블렌딩 대신 비트 논리 연산 (`VK_LOGIC_OP_COPY`, `VK_LOGIC_OP_XOR` 등). 논리 연산은 Vulkan 1.1+ `VK_EXT_shader_stencil_export` 같은 특수 상황에서 사용.
+**LogicOp:** `logicOpEnable = VK_TRUE`면 블렌딩 대신 **비트 논리 연산** (`VK_LOGIC_OP_COPY`, `VK_LOGIC_OP_XOR`, `VK_LOGIC_OP_AND` 등 16종)을 컬러 어태치먼트에 적용한다. 논리 연산은 정수형 컬러 포맷(`*UINT`/`*SINT`)에서만 동작하며, 부동소수점 포맷에는 쓸 수 없다. `blendEnable`과 `logicOpEnable`을 동시에 켜는 건 무효다.
 
 `colorWriteMask`로 각 채널별 쓰기 허용/금지를 제어할 수 있다.
 
@@ -464,7 +464,7 @@ stages[1].pSpecializationInfo = &specInfo; // 선택사항
 **Specialization Constants:** 셰이더 컴파일 타임 상수값을 파이프라인 생성 시점에 결정할 수 있다. 같은 SPIR-V로 여러 파이프라인 배리언트를 만들 때 유용하다.
 
 ```glsl
-// GLSL 셔터에서
+// GLSL 셰이더에서
 layout(constant_id = 0) const int MAX_LIGHTS = 128;
 void main() {
     for (int i = 0; i < MAX_LIGHTS; i++) { ... }

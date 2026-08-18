@@ -34,8 +34,10 @@ Vulkan 메시 셰이더는 **전통적인 vertex / tessellation / geometry 셰�
 
 ### 2.2 지원 프리미티브
 
-- **VK_EXT_mesh_shader**: triangles, lines
-- **VK_NV_mesh_shader**: triangles, lines, points
+- **VK_EXT_mesh_shader**: points, lines, triangles
+- **VK_NV_mesh_shader**: points, lines, triangles
+
+둘 다 세 가지 출력 모드(`OutputPoints`, `OutputLinesEXT/NV`, `OutputTrianglesEXT/NV`)를 지원한다. EXT는 `gl_PrimitivePointIndicesEXT[]`/`gl_PrimitiveLineIndicesEXT[]`/`gl_PrimitiveTriangleIndicesEXT[]`로 인덱스 배열이 나뉘고, NV는 `gl_PrimitiveIndicesNV[]` 하나로 통합된다.
 
 ### 2.3 전체 사용 흐름
 
@@ -301,7 +303,7 @@ struct Payload {
 };
 
 // payload 변수 선언
-taskPayloadEXT Payload p;
+taskPayloadSharedEXT Payload p;
 
 void main() {
     uint instance_id = gl_WorkGroupID.x;
@@ -326,7 +328,7 @@ layout(triangles) out;
 layout(max_vertices = 64, max_primitives = 32) out;
 
 // Task shader에서 보낸 payload (읽기 전용)
-taskPayloadEXT Payload {
+taskPayloadSharedEXT Payload {
     uint base_instance;
     uint lod_level;
 } p;
@@ -346,9 +348,9 @@ void main() {
 | 빌트인 변수 | 타입 | 설명 |
 |------------|------|------|
 | `gl_MeshVerticesEXT[]` | `gl_MeshPerVertexEXT` 구조체 배열 | per-vertex: Position, PointSize, ClipDistance, CullDistance 등 |
-| `gl_PrimitiveTriangleIndicesEXT[]` | `uvec3[]` | 삼각형 프리미티브의 버텍스 인덱스 |
-| `gl_PrimitiveLineIndicesEXT[]` | `uvec2[]` | 라인 프리미티브의 버텍스 인덱스 |
-| `gl_PrimitivePointIndicesEXT[]` | `uint[]` | 포인트 프리미티브의 버텍스 인덱스. SPIR-V 레벨에서는 EXT에 정의되었으나, Vulkan API 레벨에서 VK_EXT_mesh_shader는 points를 지원하지 않는다 (NV는 `gl_PrimitiveIndicesNV[]` 사용) |
+| `gl_PrimitiveTriangleIndicesEXT[]` | `uvec3[]` | 삼각형 프리미티브의 버텍스 인덱스 (`OutputTrianglesEXT`) |
+| `gl_PrimitiveLineIndicesEXT[]` | `uvec2[]` | 라인 프리미티브의 버텍스 인덱스 (`OutputLinesEXT`) |
+| `gl_PrimitivePointIndicesEXT[]` | `uint[]` | 포인트 프리미티브의 버텍스 인덱스 (`OutputPoints`) |
 
 `gl_MeshPerVertexEXT` 구조체:
 ```glsl
@@ -398,10 +400,10 @@ SetMeshOutputsEXT(uint vertex_count, uint primitive_count);
 
 ### 8.1 VK_EXT_mesh_shader 방식 (TaskEXT)
 
-GLSL에서 payload는 `taskPayloadEXT` storage class로 선언:
+GLSL에서 payload는 `taskPayloadSharedEXT` storage class로 선언:
 
 ```glsl
-taskPayloadEXT struct Payload {
+taskPayloadSharedEXT struct Payload {
     uint base_draw_id;
     float lod_bias;
     uint pad;          // 16바이트 정렬 권장
@@ -618,6 +620,7 @@ vkCmdBindShadersEXT(commandBuffer, 3, stages, shaders);
 | `maxTaskWorkGroupSize` | (128, 128, 128) | 차원별 최대 |
 | `maxTaskPayloadSize` | 16384 (16KB) | Task payload 최대 크기 |
 | `maxTaskSharedMemorySize` | 32768 (32KB) | Task 공유 메모리 최대 |
+| `maxTaskPayloadAndSharedMemorySize` | 32768 (32KB) | Task payload + 공유 메모리 합 |
 | `maxMeshWorkGroupTotalCount` | $2^{22}$ | Mesh 워크그룹 총 개수 |
 | `maxMeshWorkGroupCount` | (65535, 65535, 65535) | 차원별 최대 |
 | `maxMeshWorkGroupInvocations` | 128 | Mesh 인보케이션 수 |
@@ -625,8 +628,13 @@ vkCmdBindShadersEXT(commandBuffer, 3, stages, shaders);
 | `maxMeshOutputVertices` | **256** | 워크그룹당 최대 출력 버텍스 |
 | `maxMeshOutputPrimitives` | **256** | 워크그룹당 최대 출력 프리미티브 |
 | `maxMeshOutputLayers` | 8 | 최대 layer |
+| `maxMeshOutputComponents` | 128 | per-vertex 출력 컴포넌트 수 |
 | `maxMeshOutputMemorySize` | 32768 (32KB) | 출력 메모리 최대 |
+| `maxMeshSharedMemorySize` | 28672 (28KB) | Mesh 공유 메모리 최대 |
+| `maxMeshPayloadAndSharedMemorySize` | 28672 (28KB) | payload + 공유 메모리 합 |
+| `maxMeshPayloadAndOutputMemorySize` | 48128 (47KB) | payload + 출력 메모리 합 |
 | `meshOutputPerVertexGranularity` | ≤ 32 | 버텍스 할당 단위 (granularity) |
+| `meshOutputPerPrimitiveGranularity` | ≤ 32 | 프리미티브 할당 단위 (granularity) |
 | `maxPreferredTaskWorkGroupInvocations` | 구현 의존 | 선호 Task 인보케이션 |
 | `maxPreferredMeshWorkGroupInvocations` | 구현 의존 | 선호 Mesh 인보케이션 |
 
@@ -640,10 +648,12 @@ vkCmdBindShadersEXT(commandBuffer, 3, stages, shaders);
 total_memory = output_memory + shared_memory (+ payload_memory)
 
 제약:
-  output_memory               ≤ maxMeshOutputMemorySize
-  shared_memory               ≤ maxMeshSharedMemorySize
-  output_memory + shared_memory      ≤ maxMeshPayloadAndOutputMemorySize
-  (task) payload + shared_memory     ≤ maxTaskPayloadAndSharedMemorySize
+  output_memory                        ≤ maxMeshOutputMemorySize          (32768)
+  shared_memory                        ≤ maxMeshSharedMemorySize          (28672)
+  payload + shared_memory              ≤ maxMeshPayloadAndSharedMemorySize (28672)
+  payload + output_memory              ≤ maxMeshPayloadAndOutputMemorySize (48128)
+  (task) payload                       ≤ maxTaskPayloadSize                (16384)
+  (task) payload + task shared_memory  ≤ maxTaskPayloadAndSharedMemorySize (32768)
 ```
 
 - `output_memory` = vertex 출력 × per-vertex granularity + primitive 출력 × per-primitive granularity + 출력 컴포넌트
@@ -657,8 +667,8 @@ total_memory = output_memory + shared_memory (+ payload_memory)
 |------|--------------------|--------------------|
 | **Task → Mesh 전달** | `TaskPayloadWorkgroupEXT` 구조체 포인터 (단일) | `PerTaskNV` output 변수 (다중) |
 | **Task workgroup 생성** | `OpEmitMeshTasksEXT(groupX, groupY, groupZ, payload)` | `gl_TaskCountNV = n` (1D만) |
-| **Mesh 출력 인덱스** | `gl_PrimitiveTriangleIndicesEXT[]`, `gl_PrimitiveLineIndicesEXT[]` | `gl_PrimitiveIndicesNV[]` (통합) |
-| **출력 토폴로지** | triangles, lines | triangles, lines, **points** |
+| **출력 토폴로지** | points, lines, triangles | points, lines, triangles |
+| **Mesh 출력 인덱스** | `gl_PrimitivePointIndicesEXT[]` / `gl_PrimitiveLineIndicesEXT[]` / `gl_PrimitiveTriangleIndicesEXT[]` (토폴로지별 분리) | `gl_PrimitiveIndicesNV[]` (통합) |
 | **워크그룹 차원** | 3D (groupCountX/Y/Z) | **1D only** (taskCount, firstTask) |
 | **워크그룹 Shape** | max: (128,128,128), invocations: 128 | max: (32,1,1), invocations: **32** |
 | **드로우 커맨드** | `vkCmdDrawMeshTasksEXT` | `vkCmdDrawMeshTasksNV` |
@@ -810,4 +820,4 @@ VkGraphicsPipelineCreateInfo pipelineCI = {
 vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineCI, NULL, &pipeline);
 ```
 
-Mesh 셰이더는 `gl_MeshVerticesEXT[]` 배열을 통해 정점을 생성하고, `gl_PrimitiveTriangleIndicesEXT[]`(삼각형), `gl_PrimitiveLineIndicesEXT[]`(라인) 등으로 프리미티브를 정의한다. 전통적인 버텍스 버퍼가 필요 없어서 **GPU 드리븐 렌더링**이나 **동적 LOD**에 유리하다. (참고: points 프리미티브는 `VK_NV_mesh_shader` 전용이며 EXT에서는 사용할 수 없다.)
+Mesh 셰이더는 `gl_MeshVerticesEXT[]` 배열을 통해 정점을 생성하고, `gl_PrimitiveTriangleIndicesEXT[]`(삼각형), `gl_PrimitiveLineIndicesEXT[]`(라인), `gl_PrimitivePointIndicesEXT[]`(포인트) 등으로 프리미티브를 정의한다. 전통적인 버텍스 버퍼가 필요 없어서 **GPU 드리븐 렌더링**이나 **동적 LOD**에 유리하다.

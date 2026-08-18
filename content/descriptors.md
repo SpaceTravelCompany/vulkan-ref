@@ -116,6 +116,8 @@ vkCreateDescriptorSetLayout(device, &dslCI, nullptr, &descriptorSetLayout);
 
 **Vulkan 1.2 / VK_EXT_descriptor_indexing**부터는 **Update-After-Bind**와 **Partially-Bound** 등이 추가되어, 레이아웃을 더 유연하게 구성할 수 있다.
 
+> **관련 문서** — descriptor pool 없이 `VkBuffer`에 직접 기록하는 `VK_EXT_descriptor_buffer`는 `uniform-and-storage-buffers` 토픽 §11 참고.
+
 ---
 
 ## 3. VkPipelineLayout ("파이프라인에 layout 연결")

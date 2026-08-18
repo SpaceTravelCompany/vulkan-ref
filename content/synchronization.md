@@ -235,11 +235,11 @@ void vkCmdWaitEvents(
 인자가 무려 11개로 `vkCmdPipelineBarrier`와 거의 동일하다. 차이는:
 
 - `eventCount` / `pEvents`: "이 event(들)이 signal될 때까지" 기다린다는 점
-- `srcStageMask`: **event가 signal된 스테이지** 중에서 어떤 스테이지까지 포함할지 (setEvent 때 지정한 스테이지와 일치해야 함)
+- `srcStageMask`: **event가 signal된 스테이지** 중에서 어떤 스테이지까지 포함할지 (setEvent 때 지정한 스테이지를 포함해야 함)
 - `dstStageMask`: wait 이후 실행될 명령 중 **이 스테이지들**만 wait 뒤에 실행됨
 - `memory/buffer/image barriers`: 배리어와 동일. event 신호 이후 메모리 가시성 보장이 필요한 경우 추가
 
-**반드시 setEvent 때의 stage와 waitEvents 때의 srcStage를 일치시켜야 한다.**
+**waitEvents의 srcStageMask는 setEvent에서 signal한 stage를 포함해야 한다** (정확히 같을 필요는 없고, 더 넓게 잡아도 된다).
 
 ```c
 // 좋은 예
@@ -682,6 +682,8 @@ memory barrier 수를 0으로 주고, 어떤 `pMemoryBarriers` / `pBufferMemoryB
 - **같은 큐 안에서 복잡한 의존성** → Event로 세밀하게, 아니면 Pipeline Barrier로 간단하게
 
 초보자는 일단 **Fence + Binary Semaphore + Pipeline Barrier** 세 가지만 잘 써도 대부분 해결된다. Event는 성능 최적화가 필요할 때 고려하면 된다.
+
+> **관련 문서** — 큐 패밀리 소유권 이전(release/acquire)의 전체 코드 예시는 `buffers-and-images` 토픽 §6, 프레임 인 플라이트는 `thread-safety` 토픽 §5 참고.
 
 ---
 

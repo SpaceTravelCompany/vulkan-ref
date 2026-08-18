@@ -185,36 +185,16 @@ Vulkan 1.3에서 도입된 **Dynamic Rendering**은 렌더 패스 오브젝트�
 
 > **언제 쓰면 좋을까?** 서브패스가 하나뿐인 단순한 렌더링이라면 Dynamic Rendering이 코드가 훨씬 간결하다. 하지만 서브패스 간 on-chip 최적화가 필요한 Deferred Shading 등은 기존 Render Pass가 더 효율적이다.
 
-```c
-// Dynamic Rendering: 렌더 패스 생성 없이 바로 시작
-VkRenderingAttachmentInfo colorAttachment{};
-colorAttachment.imageView = swapchainImageView;
-colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-VkRenderingInfo renderInfo{};
-renderInfo.renderArea = ...;
-renderInfo.layerCount = 1;
-renderInfo.colorAttachmentCount = 1;
-renderInfo.pColorAttachments = &colorAttachment;
-
-vkCmdBeginRendering(cmdBuffer, &renderInfo);
-vkCmdDraw(cmdBuffer, ...);
-vkCmdEndRendering(cmdBuffer);
-```
-
-**Dynamic Rendering vs 기존 서브패스:**
+**Dynamic Rendering vs 기존 서브패스 (요약):**
 
 | 항목 | 기존 Render Pass | Dynamic Rendering (Vulkan 1.3) |
 |------|-----------------|-------------------------------|
 | 사전 생성 | `vkCreateRenderPass` 필요 | 즉시 사용 가능 |
 | 서브패스 | 여러 서브패스 가능 | 단일 패스만 (서브패스 없음) |
 | 렌더 패스 호환성 | 파이프라인과 render pass 호환 필요 | 파이프라인과 VkFormat만 일치하면 됨 |
-| 코드 복잡도 | 낮음 | 낮음 (설정 간소화) |
 | TBDR 최적화 | 서브패스 + input attachment로 최적화 | 일반 texture로 fallback |
 
-Vulkan 1.4에서는 `VkRenderingInputAttachmentIndexInfo` 구조체가 추가되어 Dynamic Rendering에서도 input attachment를 사용할 수 있게 되었다. 하지만 엄밀히 말해 Dynamic Rendering은 서브패스를 지원하지 않으며, input attachment로 on-chip 최적화를 받으려면 기존 Render Pass가 필요하다.
+> **전체 설명은 `dynamic-rendering` 토픽 참고.** 거기서 포맷 계약, 레이아웃 전환, load/store op, MSAA resolve, secondary command buffer, suspend/resume까지 상세히 다룬다.
 
 > 실무적으로는 **성능이 중요한 TBDR 타겟**이라면 기존 Render Pass + subpass 방식을, **데스크탑/단순 파이프라인**이라면 Dynamic Rendering 방식을 선택하는 추세다.
 
@@ -234,6 +214,49 @@ subpass.viewMask = 0;       // multiview 지원: 렌더링을 브로드캐스트
 ```
 
 `VkAttachmentReference2`의 pNext 체인을 통해 VRS(fragment shading rate), multisample resolve 관련 확장 구조체를 연결할 수 있다. 사실상 `VkSubpassDescription`(Legacy)은 이제 하위 호환성 유지용이다.
+
+```c
+// Vulkan 1.2 이후: VkAttachmentDescription2 사용
+VkAttachmentDescription2 colorAttachment{};
+colorAttachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+colorAttachment.format = VK_FORMAT_B8G8R8A8_SRGB;
+colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+VkSubpassDescription2 subpass{};
+subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+subpass.colorAttachmentCount = 1;
+subpass.pColorAttachments = &(VkAttachmentReference2){
+    .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
+    .attachment = 0,
+    .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+};
+
+VkSubpassDependency2 dep{};
+dep.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+dep.srcSubpass = VK_SUBPASS_EXTERNAL;
+dep.dstSubpass = 0;
+dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+dep.srcAccessMask = 0;
+dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+VkRenderPassCreateInfo2 rpci{};
+rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+rpci.attachmentCount = 1;
+rpci.pAttachments = &colorAttachment;
+rpci.subpassCount = 1;
+rpci.pSubpasses = &subpass;
+rpci.dependencyCount = 1;
+rpci.pDependencies = &dep;
+
+VkRenderPass renderPass;
+vkCreateRenderPass2(device, &rpci, nullptr, &renderPass);
+```
 
 ---
 
@@ -255,7 +278,7 @@ subpass.viewMask = 0;       // multiview 지원: 렌더링을 브로드캐스트
 
 ### Dynamic Rendering (Vulkan 1.3+)
 
-`VkRenderPass` 없이 `vkCmdBeginRendering`으로 렌더링한다.
+`VkRenderPass` 없이 `vkCmdBeginRendering`으로 렌더링한다. (상세는 `dynamic-rendering` 토픽 참고)
 
 - 렌더 패스 **호환성 규칙** 관리 불필요
 - **Framebuffer 객체** 생성 불필요
