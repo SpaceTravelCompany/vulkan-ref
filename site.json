@@ -178,6 +178,12 @@
           "icon": "⌘"
         },
         {
+          "slug": "indirect-draw",
+          "title": "Indirect Draw",
+          "summary": "vkCmdDraw*Indirect · 구조체 · feature 분기 · 배리어 · 배칭",
+          "icon": "⇢"
+        },
+        {
           "slug": "performance",
           "title": "성능 최적화",
           "summary": "디스크립터 · 메모리 · 커맨드 버퍼 · 체크리스트",
