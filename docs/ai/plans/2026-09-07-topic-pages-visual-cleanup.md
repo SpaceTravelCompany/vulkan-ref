@@ -88,6 +88,15 @@
     `mathematics@00c2585`(.gitattributes+site.json), `game-math@319dd84`(site.json).
     `topic-pages`는 renormalize 후 `status` 고스트(un staged 표시·`diff` empty)가 남아
     `git add -A`로 확정 → staged 5파일·미세 diff 확인 후 커밋. push는 요청 없어서 생략.
+- [x] 7. 후속: 버튼 테두리 제거·TOC 배경 구분·화살표 실선 커넥터
+  - `topic-pages@87802a4` (`assets/main.css`, `lib/flowchart.js`):
+    `.icon-btn`·`.toc-toggle` 테두리 제거(배경 대비 유지, `toc-toggle:hover` 잔재 정리),
+    데스크톱 `.toc-panel`에 `surface` 배경(구분선 없이 영역 구분),
+    flowchart(`↓`→`▼` + `::before` 기둥 2×16px)·relflow(양옆 기둥 + `→`)·cmdstack(기둥 + `▼`) 실선 커넥터.
+  - 4 사이트 `node_modules` 동기화 후 재빌드 성공. 사이트 저장소는 추적 변경 없음(dist·node_modules는 ignore).
+  - 검증: baseUrl 절대경로 에셋 때문에 로컬 `dist`가 배포 CSS를 끌어오는 것을 확인 → 임시 복사본(상대경로 치환)으로
+    로컬 CSS 검증. 스크린샷: validation flowchart(기둥+▼, 3분기 포함)·memory relflow(—→—)·TOC 배경 구분·보더리스 버튼.
+  - 주의: 로컬 `dist` HTML은 에셋을 배포 URL에서 로드하므로, 실제 사이트 반영은 push 후 Pages 재빌드 필요.
 
 ## Deviations (final-conformance에서 확인·승인)
 - `.relflow`·`.cmdstack` 외곽 컨테이너: border 제거와 함께
