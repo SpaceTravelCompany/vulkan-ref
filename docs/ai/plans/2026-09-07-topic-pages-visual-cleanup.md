@@ -97,6 +97,22 @@
   - 검증: baseUrl 절대경로 에셋 때문에 로컬 `dist`가 배포 CSS를 끌어오는 것을 확인 → 임시 복사본(상대경로 치환)으로
     로컬 CSS 검증. 스크린샷: validation flowchart(기둥+▼, 3분기 포함)·memory relflow(—→—)·TOC 배경 구분·보더리스 버튼.
   - 주의: 로컬 `dist` HTML은 에셋을 배포 URL에서 로드하므로, 실제 사이트 반영은 push 후 Pages 재빌드 필요.
+- [x] 8. 구조 변경: flowchart 가짜 화살표 → 실측 SVG 간선
+  - 문제 구조: 레벨 행 가운데 몰아넣은 글리프(▼▼▼)는 실제 부모-자식 대응이 없어
+    "어느 상자를 향하는지"가 틀려 보임. 모양이 아니라 구조가 잘못.
+  - `topic-pages@86bae04` (`assets/app.js` +130, `assets/main.css` +44):
+    빌드는 간선 데이터(`data-from/to`) + 폴백 행 그대로 출력,
+    `initFlowchartEdges()`가 노드 기하 실측 후 부모 하단→자식 상단 직교 엘보우를 SVG로 그림.
+    성공 시 `.has-svg-edges`로 폴백 숨김·행간 확보, 라벨은 중점 오버레이. no-JS 폴백 유지.
+    재측정: ResizeObserver(rAF) + resize 150ms + fonts.ready + 리더 글자크기 토글.
+    제한(기존 동등): 스킵-레벨 간선 미지원, LR 방향 미지원(전 콘텐츠 TD).
+  - `topic-pages@a267457` (`` `@review` `` final-conformance 지적 2건 반영):
+    인쇄에서는 SVG가 어긋나므로 폴백으로 출력(전용 `@media print` 블록이 SVG 규칙보다 뒤에 와야 동일 명시도에서 이김 —
+    처음 위치는 순서가 앞서 무력화되는 결함이 있었음), RO 수렴 주석 정정.
+  - 4 사이트 동기화·재빌드. 사이트 저장소 추적 변경 없음.
+  - 검증: validation 12/12 간선·폴백 숨김, E→F/G/H 팬이 각 상자에 정확히 착지(스크린샷),
+    4-다이어그램 페이지 13간선·마커ID 고유, 500px 리사이즈 재라우팅, 라벨 합성 테스트,
+    headless 인쇄 PDF에서 폴백 ▼ 출력 확인. `` `node --check` `` 통과.
 
 ## Deviations (final-conformance에서 확인·승인)
 - `.relflow`·`.cmdstack` 외곽 컨테이너: border 제거와 함께
