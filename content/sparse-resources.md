@@ -1,61 +1,50 @@
 ---
-title: Sparse Resources
+title: 스파스 리소스 (Sparse Resources)
 slug: sparse-resources
 ---
 
 ## 소개
 
-**Sparse Resources**는 물리 메모리보다 큰 리소스를 다룰 수 있게 해주는 메커니즘이다. 디스크의 sparse file처럼, **일부 페이지만 메모리에 매핑**하고 나머지는 backing storage(디바이스 메모리)에 남겨둘 수 있다.
+**스파스 리소스(Sparse Resources)**는 물리 메모리보다 훨씬 큰 가상 리소스를 생성하고, 실제 사용되는 영역에만 물리 메모리를 선택적으로 바인딩한다. 파일 시스템의 스파스 파일처럼 전체 가상 주소 공간 중 **필요한 페이지만 물리 `VkDeviceMemory`에 매핑**하고 나머지는 미할당(unmapped) 상태로 유지할 수 있다.
 
-### 왜 필요한가
+### 스파스 리소스가 필요한 이유
 
-전통적 Vulkan 흐름은 **리소스 전체가 한 번에 fully resident**해야 한다. 다음 상황에서 문제:
+기존 Vulkan 리소스는 전체 메모리가 생성 직후 단일 블록으로 완전히 할당 및 바인딩(fully resident)되어야 한다. 이 방식은 대규모 가상 자산을 다룰 때 다음과 같은 한계에 부딪힌다.
 
-| 상황 | 문제 |
-|------|------|
-| **16K × 16K 텍스처** (1GB+) | VRAM에 다 못 올림. 페이지 매핑 필수 |
-| **스트리밍 메쉬** (대용량 SSBO) | 처음엔 일부만 resident, 디스크/시스템 메모리에서 채우기 |
-| **타일 기반 deferred 셰이딩** | 화면에 보이는 타일만 resident, 나머지는 unmapped |
-| **Virtual Texturing (Mega Texture)** | 디스크에 수 GB 텍스처, 보이는 부분만 VRAM에 |
-| **타일 기반 GPU의 lazy allocation** | TBDR 디바이스에서 tile memory를 demand-allocated |
-
-**Sparse의 핵심 아이디어:**
+| 사용 시나리오 | 기존 방식의 한계 | 스파스 리소스의 해결책 |
+|---|---|---|
+| **16K × 16K 초고해상도 텍스처** (수 GB 이상) | VRAM 용량 부족으로 생성 불가 | 현재 화면에 표시되는 타일 페이지만 VRAM에 선별 적재 |
+| **대용량 지형/스트리밍 메시** (거대 SSBO) | 초기 로딩 시 모든 정점을 적재해야 함 | 카메라 가시 영역에 위치한 블록만 점진적으로 스트리밍 |
+| **가상 텍스처링 (Virtual Texturing / Mega Texture)** | 디스크의 방대한 텍스처 데이터를 VRAM에 올릴 수 없음 | 가시 영역의 Mip 레벨 블록만 필요할 때 바인딩 |
+| **메모리 재활용 (Aliasing)** | 개별 리소스마다 전용 메모리 점유 | 서로 다른 시점에 쓰이는 영역끼리 동일 물리 메모리를 공유 |
 
 ```
-[기존]  VkImage (16 GB)  →  vkAllocateMemory (16 GB)  →  vkBindImageMemory
-        ⚠ 메모리 16 GB 없으면 실패
+[기존 방식]
+VkImage (16GB 가상 크기) ──> vkAllocateMemory (16GB) ──> vkBindImageMemory (단일 1회 바인딩)
+※ 16GB 물리 메모리가 즉시 필요하며 부족할 경우 생성 실패
 
-[Sparse] VkImage (16 GB)  →  vkGetImageSparseMemoryRequirements  →  block 단위로 sparse bind
-        VkDeviceMemory (1 GB, 필요에 따라 여러 개)  →  vkQueueBindSparse
-        💡 unmapped 페이지는 셰이더가 안 읽게 디자인 → 사용 OK
+[스파스 방식]
+VkImage (16GB 가상 크기) ──> 가상 주소만 확보
+VkDeviceMemory (1GB 풀)  ──> 필요한 타일 영역만 vkQueueBindSparse로 동적 매핑
+※ 미매핑(unmapped) 타일은 셰이더가 접근하지 않도록 가드하여 VRAM 절약
 ```
 
-장점:
+스파스 리소스를 운용하려면 다음과 같은 규칙을 애플리케이션에서 직접 관리해야 한다.
+- 셰이더가 미바인딩 영역을 함부로 읽지 않도록 설계하거나 드라이버 폴백 속성을 확인해야 한다.
+- 메모리 바인딩이 일반 커맨드가 아니라 `vkQueueBindSparse` 큐 제출 명령으로 수행되므로 세마포어를 통한 동기화가 필수적이다.
+- 타일 블록 정렬, 밉테일(Mip-tail) 처리, 에일리어싱 수명 주기를 직접 통제해야 한다.
 
-- **메모리 한계 극복**: VRAM이 모자라도 **필요한 부분만** 차례로 올리며 작업
-- **스트리밍**: 디스크/시스템 메모리 → VRAM으로 페이지 단위 로딩
-- **유휴 페이지 절약**: 보이지 않는 mip이나 카메라 밖 타일은 매핑 안 함
-- **메모리 풀링**: aliasing으로 여러 리소스가 같은 메모리 블록을 시간차 공유
-
-대신 **복잡성 비용**이 따른다:
-
-- 셰이더가 unmapped 영역을 읽지 않도록 **별도 가드** 필요
-- `vkQueueBindSparse` + `VK_QUEUE_SPARSE_BINDING_BIT` 큐 관리
-- 페이지 단위 동기화, lifetime, aliasing 규칙 모두 직접 다룸
-
-> **용어 정리**
-> - **Sparse Binding**: 리소스 전체를 한꺼번에 바인딩하지 않고, **page/block 단위**로 바인딩하는 능력.
-> - **Sparse Residency**: 일부 페이지만 resident하고, 나머지는 **unmapped**. shader가 unmapped 페이지를 안 쓰게 디자인하면 사용 가능.
-> - **Sparse Aliasing**: 여러 리소스가 같은 메모리 블록을 **시간차**로 공유.
-> - **Block (Page)**: sparse의 최소 단위. 64KB(보통, buffer), 또는 format-specific(보통 64K texel, image).
-> - **Mip-tail**: 큰 mip과 그 아래의 모든 작은 mip 묶음. opaque 메모리 영역. 한 번에 바인딩.
-> - **vkQueueBindSparse**: sparse 바인딩을 큐에 제출하는 별도 명령. graphics/compute와 다른 큐.
-
-이 문서는 **생성 → 요구사항 → 바인딩 → 큐 제출 → unmapped 가드** 흐름을 다룬다.
+> **주요 용어**
+> - **스파스 바인딩 (Sparse Binding)**: 리소스 전체를 한 번에 바인딩하지 않고 블록(페이지) 단위로 바인딩 및 언바인딩하는 기본 기능.
+> - **스파스 레지던시 (Sparse Residency)**: 리소스의 일부 블록에만 물리 메모리가 매핑된 상태(부분 레지던트)에서도 셰이더가 해당 리소스를 유효하게 참조할 수 있는 기능.
+> - **스파스 에일리어싱 (Sparse Aliasing)**: 둘 이상의 스파스 리소스(또는 한 리소스의 서로 다른 영역)가 동일한 물리 메모리 블록을 시간차를 두고 공유하는 기법.
+> - **블록 (Block / Page)**: 스파스 바인딩의 최소 단위. 버퍼는 통상 64KB 단위이며 이미지는 텍셀 단위의 하드웨어 타일 크기(`imageGranularity`)를 따른다.
+> - **밉테일 (Mip-tail)**: 밉맵 체인에서 해상도가 작아져 스파스 블록 하나보다 작아진 저해상도 밉 레벨들의 묶음. 하나의 불투명(opaque) 메모리 영역으로 일괄 바인딩한다.
+> - **`vkQueueBindSparse`**: 스파스 바인딩 명령을 큐에 제출하는 함수. `VK_QUEUE_SPARSE_BINDING_BIT`가 있는 큐에서 실행한다.
 
 ---
 
-## 1. 큰 그림 — sparse vs 일반
+## 1. 일반 리소스와 스파스 리소스의 구조 비교
 
 ```flowchart
 flowchart TD
@@ -82,222 +71,229 @@ flowchart TD
   M --> N
 ```
 
-**핵심 차이:**
-
-| | 일반 | Sparse |
-|---|------|--------|
-| 바인딩 호출 | `vkBind*Memory` (한 번) | `vkQueueBindSparse` (큐 제출, 여러 번) |
-| 바인딩 단위 | 전체 리소스 | block / page / mip-tail |
-| 메모리 residency | 항상 fully resident | 부분 resident 가능 |
-| 큐 종류 | graphics / compute / transfer | **VK_QUEUE_SPARSE_BINDING_BIT** 큐 |
-| 동기화 | 자동 (필요 시 fence/semaphore) | 명시적 wait/signal semaphore |
+| 구분 | 일반 리소스 | 스파스 리소스 |
+|---|---|---|
+| **바인딩 API** | `vkBindBufferMemory`, `vkBindImageMemory` (디바이스 수준 단발 호출) | `vkQueueBindSparse` (큐에 제출하는 비동기 연산) |
+| **바인딩 단위** | 리소스 전체 단일 바인딩 | 블록, 타일 페이지, 밉테일 단위 분할 바인딩 |
+| **메모리 점유** | 전체 가상 크기만큼 100% 물리 메모리 점유 | 실제 매핑된 페이지만 물리 메모리 점유 (부분 레지던트) |
+| **실행 큐** | 그래픽스, 컴퓨트, 트랜스퍼 큐 | `VK_QUEUE_SPARSE_BINDING_BIT` 플래그를 갖춘 큐 |
+| **동기화 방식** | 리소스 생성 단계에서 바인딩 완료 보장 | 세마포어/펜스를 통한 큐 간 명시적 동기화 필수 |
 
 ---
 
-## 2. 생성 — sparse 플래그
+## 2. 스파스 리소스 생성과 플래그
 
-### 2.1. `VkBufferCreateInfo` (sparse)
+### 2.1. 버퍼 생성 (`VkBufferCreateInfo`)
+
+스파스 버퍼를 생성할 때는 `flags`에 용도에 맞는 비트를 지정한다.
 
 ```c
 VkBufferCreateInfo bci{};
-bci.size  = 16 * 1024 * 1024;  // 16 MB 가상 크기
-bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-          | VK_BUFFER_USAGE_TRANSFER_DST_BIT;  // backing memory 채우기용
+bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+bci.size  = 64 * 1024 * 1024; // 64MB 가상 주소 공간
+bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 bci.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT
-         | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT   // 부분 resident
-         | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;   // 별칭 가능 (선택)
+          | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT  // 부분 매핑 허용
+          | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT;  // 메모리 공유 허용 시 (선택)
 ```
 
-| 플래그 | 의미 | 필요 feature |
-|--------|------|--------------|
-| `SPARSE_BINDING_BIT` | sparse 바인딩 사용 | `sparseBinding` |
-| `SPARSE_RESIDENCY_BIT` | 부분 resident 가능 | `sparseResidencyBuffer` |
-| `SPARSE_ALIASED_BIT` | 다른 리소스와 메모리 별칭 | (위 둘에 포함) |
+| 플래그 | 설명 | 필요 디바이스 기능 |
+|---|---|---|
+| `VK_BUFFER_CREATE_SPARSE_BINDING_BIT` | 블록 단위 스파스 바인딩을 활성화한다. | `sparseBinding` |
+| `VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT` | 일부 영역만 바인딩된 상태(부분 레지던트)에서의 사용을 허용한다. | `sparseResidencyBuffer` |
+| `VK_BUFFER_CREATE_SPARSE_ALIASED_BIT` | 다른 리소스와 물리 메모리를 중복 바인딩할 수 있도록 허용한다. | `sparseResidencyAliased` |
 
-> **스펙 원문 (NOTE)** "Specifying `VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT` requires specifying `VK_BUFFER_CREATE_SPARSE_BINDING_BIT`, as well."
->> RESIDENCY/BINDING 둘 다 켜져야 residency 의미가 있음.
-
-> **스펙 원문 (VUID-VkBufferCreateInfo-None-01888)** "If any of the bits `VK_BUFFER_CREATE_SPARSE_BINDING_BIT`, `VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT`, or `VK_BUFFER_CREATE_SPARSE_ALIASED_BIT` are set, `VK_BUFFER_CREATE_PROTECTED_BIT` must not also be set."
->> sparse + protected 동시 불가.
-
-> **스펙 원문 (VUID-VkBufferCreateInfo-pNext-01571)** If `VkDedicatedAllocationBufferCreateInfoNV::dedicatedAllocation` is `VK_TRUE`, then flags must not include any of the sparse bits.
->> dedicated allocation과 sparse 동시 불가 (NV).
-
-### 2.2. `VkImageCreateInfo` (sparse)
-
-```c
-VkImageCreateInfo ici{};
-ici.imageType     = VK_IMAGE_TYPE_2D;
-ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
-ici.extent        = {16384, 16384, 1};  // GB 단위
-ici.mipLevels     = 14;
-ici.arrayLayers   = 1;
-ici.samples       = VK_SAMPLE_COUNT_1_BIT;
-ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
-ici.usage         = VK_IMAGE_USAGE_SAMPLED_BIT
-                 | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
-ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-ici.flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT
-          | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT  // 부분 resident
-          | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;  // 메모리 별칭
-```
-
-> **스펙 원문** (image flags) `VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT`는 `VK_IMAGE_CREATE_SPARSE_BINDING_BIT`를 함의. residency는 `sparseResidency*` feature 필요.
-
-**image sparse feature (다양):**
-
-| Feature | 의미 |
-|---------|------|
-| `sparseBinding` | 기본 sparse 바인딩 |
-| `sparseResidencyBuffer` | buffer residency |
-| `sparseResidencyImage2D` | 2D image residency |
-| `sparseResidencyImage3D` | 3D image residency |
-| `sparseResidency2Samples` / `sparseResidency4Samples` / `sparseResidency8Samples` / `sparseResidency16Samples` | 멀티샘플 residency |
-| `sparseResidencyAliased` | residency + aliasing 동시 |
-
-모두 별도 feature. 사용하려는 image 파라미터(차원/샘플/residency/aliasing)에 맞는 feature를 활성화.
+> [!IMPORTANT]
+> - `VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT`를 지정할 때는 반드시 `VK_BUFFER_CREATE_SPARSE_BINDING_BIT`를 함께 지정해야 한다.
+> - 스파스 플래그가 지정된 버퍼는 `VK_BUFFER_CREATE_PROTECTED_BIT`와 함께 사용할 수 없다(VUID-VkBufferCreateInfo-None-01888).
+> - NVIDIA 전용 할당(`VkDedicatedAllocationBufferCreateInfoNV::dedicatedAllocation = VK_TRUE`)과 스파스 비트는 동시에 사용할 수 없다(VUID-VkBufferCreateInfo-pNext-01571).
 
 ---
 
-## 3. Sparse property 조회
+### 2.2. 이미지 생성 (`VkImageCreateInfo`)
 
-### 3.1. 디바이스 sparse 속성
+스파스 이미지는 대용량 가상 텍스처를 구축할 때 핵심적으로 사용된다.
 
 ```c
-VkPhysicalDeviceSparseProperties sp{};
-vkGetPhysicalDeviceProperties(physDev, &props);
-sp.residencyStandard2DBlockShape;     // 표준 2D block shape 지원
-sp.residencyStandard2DMultisampleBlockShape;
-sp.residencyStandard3DBlockShape;
-sp.residencyAlignedMipSize;          // mip 크기 정렬
-sp.residencyNonResidentStrict;        // unmapped → UB
-sp.residencyStrict;                  // residency 엄격
+VkImageCreateInfo ici{};
+ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+ici.imageType     = VK_IMAGE_TYPE_2D;
+ici.format        = VK_FORMAT_R8G8B8A8_UNORM;
+ici.extent        = {16384, 16384, 1}; // 16K 초고해상도
+ici.mipLevels     = 15;
+ici.arrayLayers   = 1;
+ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+ici.usage         = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+ici.flags         = VK_IMAGE_CREATE_SPARSE_BINDING_BIT
+                  | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT
+                  | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
 ```
 
-`residencyNonResidentStrict == VK_TRUE`면 **unmapped 영역은 shader 접근 시 진짜 UB** (드라이버 가드 없음). `VK_FALSE`면 보통 0 또는 정의된 값으로 폴백.
+스파스 이미지는 지원하는 차원과 샘플 수에 따라 세분화된 디바이스 피처가 필요하다.
 
-### 3.2. Image sparse 요구사항
+| 대상 피처 | 설명 |
+|---|---|
+| `sparseBinding` | 기본 스파스 바인딩 기능 |
+| `sparseResidencyImage2D` | 2D 이미지의 부분 레지던시 지원 |
+| `sparseResidencyImage3D` | 3D 볼륨 텍스처의 부분 레지던시 지원 |
+| `sparseResidency2Samples` ~ `16Samples` | 멀티샘플 이미지의 스파스 레지던시 지원 |
+| `sparseResidencyAliased` | 스파스 이미지의 메모리 에일리어싱 지원 |
+
+---
+
+## 3. 스파스 속성 및 요구사항 조회
+
+### 3.1. 디바이스 스파스 속성 (`VkPhysicalDeviceSparseProperties`)
+
+디바이스가 보장하는 하드웨어 제약 조건은 `VkPhysicalDeviceProperties::sparseProperties`에서 확인한다.
 
 ```c
-uint32_t count;
+VkPhysicalDeviceProperties props;
+vkGetPhysicalDeviceProperties(physDev, &props);
+const VkPhysicalDeviceSparseProperties& sp = props.sparseProperties;
+
+// sp.residencyStandard2DBlockShape: 표준 2D 블록 형태 준수 여부
+// sp.residencyStandard3DBlockShape: 표준 3D 블록 형태 준수 여부
+// sp.residencyAlignedMipSize: 정렬된 밉 크기 보장 여부
+// sp.residencyNonResidentStrict: 미바인딩 영역 접근 시 동작 보장 여부
+```
+
+`residencyNonResidentStrict`가 `VK_TRUE`이면 매핑되지 않은 영역에 대한 접근이 **정의된 동작**으로 보장된다. 읽기는 0으로 채워진 것처럼 반환되고, 쓰기는 폐기된다(스펙 36.7). `VK_FALSE`인 경우 접근 자체는 안전하지만 **읽기 값이 미정의**이므로, 애플리케이션은 페이지 테이블이나 클립맵 같은 가드를 통해 결과 정확성을 직접 확보해야 한다.
+
+---
+
+### 3.2. 이미지 스파스 메모리 요구사항 조회
+
+스파스 이미지는 일반 메모리 요구사항(`vkGetImageMemoryRequirements`) 외에 타일 단위 형상과 밉테일 구조를 파악하기 위해 `vkGetImageSparseMemoryRequirements`를 호출해야 한다.
+
+```c
+uint32_t count = 0;
 vkGetImageSparseMemoryRequirements(device, image, &count, nullptr);
 std::vector<VkSparseImageMemoryRequirements> reqs(count);
 vkGetImageSparseMemoryRequirements(device, image, &count, reqs.data());
 
-for (auto& r : reqs) {
-    // r.formatProperties.aspectMask
-    // r.formatProperties.imageGranularity (texel 블록 크기)
-    // r.formatProperties.flags (SINGLE_MIPTAIL / ALIGNED_MIP_SIZE / NONSTANDARD_BLOCK_SIZE)
-    // r.imageMipTailFirstLod
-    // r.imageMipTailSize
-    // r.imageMipTailOffset
-    // r.imageMipTailStride
+for (const auto& req : reqs) {
+    // req.formatProperties.aspectMask: 대상 에스펙트
+    // req.formatProperties.imageGranularity: 텍셀 단위 타일 크기 (예: {64, 64, 1})
+    // req.formatProperties.flags: SINGLE_MIPTAIL_BIT 등
+    // req.imageMipTailFirstLod: 밉테일이 시작되는 밉 레벨 인덱스
+    // req.imageMipTailSize: 밉테일 전체를 바인딩하는 데 필요한 바이트 크기
+    // req.imageMipTailOffset: 밉테일의 가상 바인딩 시작 오프셋
+    // req.imageMipTailStride: 배열 레이어 간 밉테일 오프셋 간격
 }
 ```
 
-> **스펙 원문 (NOTE)** "If the image was not created with `VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT` then `pSparseMemoryRequirementCount` will be zero and `pSparseMemoryRequirements` will not be written to."
->> residency 안 켜면 sparse 요구사항 조회 자체가 안 됨.
-
-### 3.3. `imageGranularity` — block size
-
-`VkSparseImageFormatProperties::imageGranularity`는 **texel 단위 block 크기** (예: {64, 64, 1}). 메모리 바인딩의 단위. 한 block 안의 모든 texel은 같은 메모리 매핑을 공유.
+> [!NOTE]
+> 이미지가 `VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT` 없이 생성되었다면 `pSparseMemoryRequirements`는 반환되지 않는다.
 
 ---
 
-## 4. `VkSparseMemoryBind` — 한 bind 단위
+### 3.3. 타일 크기 (`imageGranularity`)와 밉테일 (Mip-tail)
+
+- **`imageGranularity`**: 타일 하나의 너비, 높이, 깊이(텍셀 단위)를 나타낸다. 이미지의 각 타일 바인딩 단위는 항상 이 크기의 배수로 정렬되어야 한다.
+- **밉테일의 정의**: 밉 레벨이 점차 작아져 가로/세로 해상도가 단일 타일 블록(`imageGranularity`)보다 작아지면 개별 타일 단위로 분할하여 바인딩하는 것이 불가능해진다. 따라서 드라이버는 `imageMipTailFirstLod` 이상의 모든 저해상도 밉 레벨을 하나의 불투명(opaque) 메모리 블록으로 묶어 관리한다. 이를 **밉테일(Mip-tail)**이라 부르며 일반 타일 바인딩이 아닌 불투명 바인딩(`VkSparseImageOpaqueMemoryBindInfo`)으로 일괄 바인딩해야 한다.
+
+```
+Mip 0 (16K x 16K) ──> [ 타일 단위 분할 바인딩 가능 ]
+Mip 1 ( 8K x  8K) ──> [ 타일 단위 분할 바인딩 가능 ]
+...
+Mip 10 (32 x 32)  ──┐
+Mip 11 (16 x 16)  ──┼──> [ 밉테일 (Mip-tail) ]
+Mip 12 ( 8 x  8)  ──┤    단일 블록 크기보다 작으므로
+Mip 13 ( 4 x  4)  ──┘    불투명 바인딩으로 일괄 처리
+```
+
+---
+
+## 4. 스파스 메모리 바인딩 기본 구조 (`VkSparseMemoryBind`)
+
+스파스 버퍼와 불투명 이미지 바인딩에 공통으로 사용하는 바인딩 단위 구조체다.
 
 ```c
 typedef struct VkSparseMemoryBind {
-    VkDeviceSize             resourceOffset;  // 리소스 안에서의 시작 (block-aligned)
-    VkDeviceSize             size;            // 바인딩 크기 (> 0)
-    VkDeviceMemory           memory;          // VK_NULL_HANDLE이면 unbind
-    VkDeviceSize             memoryOffset;    // memory 안에서의 시작
-    VkSparseMemoryBindFlags  flags;           // 0 또는 SPARSE_MEMORY_BIND_METADATA_BIT
+    VkDeviceSize             resourceOffset; // 리소스 내부 시작 오프셋 (블록 정렬)
+    VkDeviceSize             size;           // 바인딩 크기 (0 초과, 블록 배수)
+    VkDeviceMemory           memory;         // 바인딩할 메모리 (언바인딩 시 VK_NULL_HANDLE)
+    VkDeviceSize             memoryOffset;   // 메모리 객체 내부 시작 오프셋
+    VkSparseMemoryBindFlags  flags;          // 0 또는 VK_SPARSE_MEMORY_BIND_METADATA_BIT
 } VkSparseMemoryBind;
 ```
 
-> **스펙 원문 (VUID-VkSparseMemoryBind-resourceOffset-09491)** "If the resource being bound is a VkBuffer, `resourceOffset`, `memoryOffset` and `size` must be an integer multiple of the alignment of the `VkMemoryRequirements` structure returned from a call to `vkGetBufferMemoryRequirements` with the buffer resource."
->> **sparse block size = `vkGetBufferMemoryRequirements`의 `alignment` 값**. 모든 offset/size가 이 값의 배수.
-
-> **스펙 원문 (VUID-VkSparseMemoryBind-resourceOffset-09492)** "If the resource being bound is a VkImage, `resourceOffset` and `memoryOffset` must be an integer multiple of the alignment of the `VkMemoryRequirements` structure returned from a call to `vkGetImageMemoryRequirements` with the image resource."
->> image도 같은 정렬 규칙.
-
-> **스펙 원문 (VUID-VkSparseMemoryBind-memory-01097)** "If `memory` is not `VK_NULL_HANDLE`, `memory` must not have been created with a memory type that reports `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` bit set."
->> LAZILY_ALLOCATED 메모리는 sparse에 못 묶음. 그 메모리는 transient attachment 전용.
-
-> **스펙 원문 (VUID-VkSparseMemoryBind-size-01098/01099/01100/01101/01102)** `size > 0`, `resourceOffset < resourceSize`, `resourceOffset + size <= resourceSize`, `memoryOffset < memorySize`, `size <= memorySize - memoryOffset`.
+**정렬 및 제약 규정:**
+- 버퍼 바인딩 시 `resourceOffset`, `memoryOffset`, `size`는 반드시 `vkGetBufferMemoryRequirements`가 반환한 `alignment` 값(스파스 블록 크기)의 정수 배수여야 한다(VUID-VkSparseMemoryBind-resourceOffset-09491).
+- 이미지 바인딩 시 `resourceOffset`, `memoryOffset`은 `vkGetImageMemoryRequirements`가 반환한 `alignment`의 정수 배수여야 한다(VUID-VkSparseMemoryBind-resourceOffset-09492).
+- `memory`가 `VK_NULL_HANDLE`이 아닐 경우 해당 메모리는 `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` 속성을 가져서는 안 된다(VUID-VkSparseMemoryBind-memory-01097).
+- `size > 0`, `resourceOffset + size <= resourceSize`, `memoryOffset + size <= memorySize`를 만족해야 한다(VUID-VkSparseMemoryBind-size-01098/01099/01100/01101/01102).
+- 언바인딩(unmap)을 수행할 때는 `memory`에 `VK_NULL_HANDLE`을 넘기며 `size`는 해제할 블록 크기여야 한다.
 
 ---
 
-## 5. `VkSparseBufferMemoryBindInfo` — buffer sparse 바인딩
+## 5. 버퍼 스파스 바인딩 (`VkSparseBufferMemoryBindInfo`)
+
+버퍼의 특정 블록들에 물리 메모리를 할당하여 바인딩하는 방법이다.
 
 ```c
-typedef struct VkSparseBufferMemoryBindInfo {
-    VkBuffer               buffer;          // SPARSE_BINDING_BIT로 생성된 buffer
-    uint32_t               bindCount;
-    const VkSparseMemoryBind*  pBinds;      // 위 VkSparseMemoryBind 배열
-} VkSparseBufferMemoryBindInfo;
-```
-
-**예시: 64KB block 단위로 buffer suballocate**
-
-```c
-constexpr VkDeviceSize BLOCK = 64 * 1024;
+// 1. 스파스 버퍼 생성
 VkBufferCreateInfo bci{};
-bci.size  = 16 * 1024 * 1024;  // 16 MB
+bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+bci.size  = 16 * 1024 * 1024; // 16MB 가상 크기
 bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-bci.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT
-         | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+bci.flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
 VkBuffer sparseBuf;
 vkCreateBuffer(device, &bci, nullptr, &sparseBuf);
 
+// 2. 블록 크기(정렬 요구치) 확인
 VkMemoryRequirements memReq;
 vkGetBufferMemoryRequirements(device, sparseBuf, &memReq);
-assert(memReq.alignment == BLOCK);  // sparse block size
+const VkDeviceSize BLOCK_SIZE = memReq.alignment; // 통상 64KB
 
-// 4개 page를 한 device memory에 묶음
-VkDeviceMemory deviceMem;
-vkAllocateMemory(device, &(VkMemoryAllocateInfo){
-    .allocationSize  = 4 * BLOCK,
-    .memoryTypeIndex = findMemoryType(memReq.memoryTypeBits, DEVICE_LOCAL),
-}, nullptr, &deviceMem);
+// 3. 4개 블록(256KB)을 수용할 물리 메모리 할당
+VkMemoryAllocateInfo allocInfo{};
+allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+allocInfo.allocationSize  = 4 * BLOCK_SIZE;
+allocInfo.memoryTypeIndex = findMemoryType(memProps, memReq.memoryTypeBits,
+                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+VkDeviceMemory physicalMem;
+vkAllocateMemory(device, &allocInfo, nullptr, &physicalMem);
 
-VkSparseMemoryBind binds[4] = {
-    {0 * BLOCK, BLOCK, deviceMem, 0 * BLOCK, 0},  // page 0
-    {1 * BLOCK, BLOCK, deviceMem, 1 * BLOCK, 0},  // page 1
-    {2 * BLOCK, BLOCK, deviceMem, 2 * BLOCK, 0},  // page 2
-    {3 * BLOCK, BLOCK, deviceMem, 3 * BLOCK, 0},  // page 3
-};
+// 4. 버퍼 오프셋 0~3 페이지를 물리 메모리에 매핑
+VkSparseMemoryBind binds[4];
+for (uint32_t i = 0; i < 4; ++i) {
+    binds[i].resourceOffset = i * BLOCK_SIZE;
+    binds[i].size           = BLOCK_SIZE;
+    binds[i].memory         = physicalMem;
+    binds[i].memoryOffset   = i * BLOCK_SIZE;
+    binds[i].flags          = 0;
+}
 
-VkSparseBufferMemoryBindInfo bufferBind{};
-bufferBind.buffer    = sparseBuf;
-bufferBind.bindCount  = 4;
-bufferBind.pBinds     = binds;
+VkSparseBufferMemoryBindInfo bufferBindInfo{};
+bufferBindInfo.buffer    = sparseBuf;
+bufferBindInfo.bindCount = 4;
+bufferBindInfo.pBinds    = binds;
 ```
-
-> **스펙 원문** (스펙 36.7.5) "For all sparse resources the `VkMemoryRequirements::alignment` member specifies both the binding granularity in bytes and the required alignment of `VkDeviceMemory`."
->> `alignment`가 곧 sparse block size.
 
 ---
 
-## 6. Image sparse 바인딩
+## 6. 이미지 스파스 바인딩
 
-### 6.1. `VkSparseImageOpaqueMemoryBindInfo` — mip-tail / metadata
+스파스 이미지는 밉테일/메타데이터를 바인딩하는 **불투명 바인딩**과 일반 밉 레벨의 사각 타일을 바인딩하는 **이미지 타일 바인딩**의 두 경로로 나뉜다.
+
+### 6.1. 밉테일 불투명 바인딩 (`VkSparseImageOpaqueMemoryBindInfo`)
+
+밉테일 영역은 반드시 불투명 바인딩 구조체를 통해 매핑해야 한다.
 
 ```c
 typedef struct VkSparseImageOpaqueMemoryBindInfo {
-    VkImage                image;
-    uint32_t                bindCount;
-    const VkSparseMemoryBind* pBinds;
+    VkImage                     image;
+    uint32_t                    bindCount;
+    const VkSparseMemoryBind*   pBinds;
 } VkSparseImageOpaqueMemoryBindInfo;
 ```
 
-> **스펙 원문 (스펙 36.7.6 발췌)** "Binding the mip tail for any aspect must only be performed using `VkSparseImageOpaqueMemoryBindInfo`."
->> mip-tail은 **opaque bind**로만 묶음. 일반 image bind로는 안 됨.
-
-> **스펙 원문** "If `formatProperties.flags` contains `VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT`, then it can be bound with a single `VkSparseMemoryBind` structure, with `resourceOffset = imageMipTailOffset` and `size = imageMipTailSize`. If `formatProperties.flags` does not contain `VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT` then the offset for the mip tail in each array layer is given as: `arrayMipTailOffset = imageMipTailOffset + arrayLayer * imageMipTailStride`; and the mip tail can be bound with `layerCount` `VkSparseMemoryBind` structures, each using `size = imageMipTailSize` and `resourceOffset = arrayMipTailOffset` as defined above."
->> `SINGLE_MIPTAIL_BIT`이 있으면 단일 bind로 모든 layer 처리. 없으면 layer마다 별도 bind + `imageMipTailStride`만큼 stride.
+`formatProperties.flags`에 `VK_SPARSE_IMAGE_FORMAT_SINGLE_MIPTAIL_BIT`가 포함되어 있다면 모든 배열 레이어가 하나의 밉테일을 공유하므로 단일 `VkSparseMemoryBind`로 처리할 수 있다. 플래그가 없다면 배열 레이어마다 `imageMipTailStride` 오프셋을 더해 개별적으로 바인딩해야 한다.
 
 ```c
 VkSparseMemoryBind mipTailBind{};
@@ -305,7 +301,7 @@ mipTailBind.resourceOffset = req.imageMipTailOffset;
 mipTailBind.size           = req.imageMipTailSize;
 mipTailBind.memory         = mipTailMemory;
 mipTailBind.memoryOffset   = 0;
-// flags = 0 (color/depth mip-tail) 또는 SPARSE_MEMORY_BIND_METADATA_BIT (metadata)
+mipTailBind.flags          = 0;
 
 VkSparseImageOpaqueMemoryBindInfo opaqueBind{};
 opaqueBind.image     = sparseImage;
@@ -313,360 +309,192 @@ opaqueBind.bindCount = 1;
 opaqueBind.pBinds    = &mipTailBind;
 ```
 
-### 6.2. `VkSparseImageMemoryBindInfo` — 개별 mip / subresource
+---
+
+### 6.2. 타일 단위 바인딩 (`VkSparseImageMemoryBindInfo`)
+
+밉테일보다 해상도가 큰 일반 밉 레벨은 텍셀 좌표 영역(`VkOffset3D`, `VkExtent3D`)을 지정하여 타일 단위로 바인딩한다.
 
 ```c
-typedef struct VkSparseImageMemoryBindInfo {
-    VkImage                       image;
-    uint32_t                       bindCount;
-    const VkSparseImageMemoryBind* pBinds;
-} VkSparseImageMemoryBindInfo;
-
 typedef struct VkSparseImageMemoryBind {
-    VkImageSubresource  subresource;        // mip + layer + aspect
-    VkOffset3D          offset;             // texel (block-aligned)
-    VkExtent3D          extent;             // texel (block-aligned)
-    VkDeviceMemory      memory;
-    VkDeviceSize        memoryOffset;
-    VkSparseMemoryBindFlags  flags;         // 0 (METADATA는 opaque)
+    VkImageSubresource       subresource;  // aspect, mipLevel, arrayLayer
+    VkOffset3D               offset;       // 텍셀 시작 좌표 (imageGranularity 배수)
+    VkExtent3D               extent;       // 텍셀 범위 (imageGranularity 배수)
+    VkDeviceMemory           memory;       // 물리 메모리 객체 (언매핑 시 VK_NULL_HANDLE)
+    VkDeviceSize             memoryOffset; // 메모리 내부 오프셋
+    VkSparseMemoryBindFlags  flags;        // 0
 } VkSparseImageMemoryBind;
+
+typedef struct VkSparseImageMemoryBindInfo {
+    VkImage                          image;
+    uint32_t                         bindCount;
+    const VkSparseImageMemoryBind*   pBinds;
+} VkSparseImageMemoryBindInfo;
 ```
 
-```c
-// mip 0 layer 0의 (0,0)-(64,64) block 바인딩
-VkSparseImageMemoryBind imageBind{};
-imageBind.subresource  = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};  // mip 0, layer 0, 1 layer
-imageBind.offset       = {0, 0, 0};
-imageBind.extent       = {64, 64, 1};  // = imageGranularity
-imageBind.memory       = tileMemory;
-imageBind.memoryOffset = 0;
-
-VkSparseImageMemoryBindInfo imageBindInfo{};
-imageBindInfo.image     = sparseImage;
-imageBindInfo.bindCount = 1;
-imageBindInfo.pBinds    = &imageBind;
-```
-
-> **NOTE (스펙 발췌 36.4)** "Right-edges and bottom-edges of each level are allowed to have partially used sparse blocks. Any bound partially-used-sparse-blocks must still have their full sparse block size in bytes allocated in memory."
->> mip level이 block의 일부만 덮어도, **block 전체**만큼 메모리 할당해야 함.
-
-### 6.3. Metadata 바인딩
-
-이미지 metadata(`VK_IMAGE_ASPECT_METADATA_BIT`)는 별도 aspect로 바인딩. **반드시 `VK_SPARSE_MEMORY_BIND_METADATA_BIT` 플래그** 사용.
-
-```c
-VkSparseMemoryBind metadataBind{};
-metadataBind.flags          = VK_SPARSE_MEMORY_BIND_METADATA_BIT;
-metadataBind.resourceOffset = metadataImageMipTailOffset;  // metadata의 mip-tail
-metadataBind.size           = metadataImageMipTailSize;
-metadataBind.memory         = metadataMemory;
-metadataBind.memoryOffset   = 0;
-```
-
-> **스펙 원문** "When binding memory explicitly for the `VK_IMAGE_ASPECT_METADATA_BIT` the application must use the `VK_SPARSE_MEMORY_BIND_METADATA_BIT` in the `VkSparseMemoryBind::flags` field when binding memory."
->> metadata는 일반 image bind가 아니라 **opaque bind + 메타데이터 플래그**.
+> [!NOTE]
+> 이미지의 우측 및 하단 모서리 영역은 타일 크기로 나누어떨어지지 않아 부분 사용 블록(Partially used block)이 될 수 있다. 이 경우에도 물리 메모리는 온전한 전체 블록 바이트 크기만큼 할당되어야 한다.
 
 ---
 
-## 7. `VkBindSparseInfo` + `vkQueueBindSparse` — 큐에 제출
+### 6.3. 메타데이터 바인딩
+
+하드웨어 압축 메타데이터(`VK_IMAGE_ASPECT_METADATA_BIT`)는 별도 에스펙트로 취급된다. 메타데이터를 명시적으로 바인딩할 때는 불투명 바인딩 구조체를 사용하며, `flags`에 반드시 `VK_SPARSE_MEMORY_BIND_METADATA_BIT`를 지정해야 한다.
+
+---
+
+## 7. 스파스 바인딩 명령 제출 (`vkQueueBindSparse`)
+
+스파스 바인딩 작업은 커맨드 버퍼에 기록되지 않고 `vkQueueBindSparse`를 통해 큐에 직접 제출된다.
 
 ```c
-typedef struct VkBindSparseInfo {
-    VkStructureType                             sType;
-    const void*                                 pNext;
-    uint32_t                                    waitSemaphoreCount;
-    const VkSemaphore*                          pWaitSemaphores;
-    uint32_t                                    bufferBindCount;
-    const VkSparseBufferMemoryBindInfo*         pBufferBinds;
-    uint32_t                                    imageOpaqueBindCount;
-    const VkSparseImageOpaqueMemoryBindInfo*    pImageOpaqueBinds;
-    uint32_t                                    imageBindCount;
-    const VkSparseImageMemoryBindInfo*          pImageBinds;
-    uint32_t                                    signalSemaphoreCount;
-    const VkSemaphore*                          pSignalSemaphores;
-} VkBindSparseInfo;
-
 VkResult vkQueueBindSparse(
-    VkQueue                   queue,             // VK_QUEUE_SPARSE_BINDING_BIT
-    uint32_t                  bindInfoCount,
-    const VkBindSparseInfo*   pBindInfo,
-    VkFence                   fence);
+    VkQueue                 queue,          // VK_QUEUE_SPARSE_BINDING_BIT 지원 큐
+    uint32_t                bindInfoCount,
+    const VkBindSparseInfo* pBindInfo,
+    VkFence                 fence);
 ```
 
-### 7.1. 큐 요구사항
+### 7.1. 큐 요구사항과 동기화 규칙
 
-> **스펙 원문 (vkQueueBindSparse Command Properties)** "Supported Queue Types: `VK_QUEUE_SPARSE_BINDING_BIT`"
->> `vkQueueBindSparse`는 **반드시 sparse-capable 큐**에서만 호출. graphics/compute 큐에서 호출하면 에러.
-
-디바이스 생성 시 `VK_QUEUE_SPARSE_BINDING_BIT`를 가진 큐 패밀리가 있는지 확인:
-
-```c
-VkQueueFamilyProperties props[...];
-vkGetPhysicalDeviceQueueFamilyProperties(physDev, &count, props);
-bool hasSparse = false;
-for (auto& p : props) {
-    if (p.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) { hasSparse = true; break; }
-}
-```
-
-> **스펙 원문 (스펙 36.7.7 발췌)** "While some implementations may include `VK_QUEUE_SPARSE_BINDING_BIT` support in queue families that also include graphics and compute support, other implementations may only expose a `VK_QUEUE_SPARSE_BINDING_BIT`-only queue family. In either case, applications must use synchronization primitives to explicitly request any ordering dependencies between sparse memory binding operations and other graphics/compute/transfer operations, as sparse binding operations are not automatically ordered against command buffer execution, even within a single queue."
->> sparse binding은 **자동으로 ordering 안 됨**. 반드시 semaphore로 wait/signal.
-
-### 7.2. Submit 패턴
+- `vkQueueBindSparse`는 디바이스 생성 시 `VK_QUEUE_SPARSE_BINDING_BIT`가 켜진 큐 패밀리에서만 호출할 수 있다.
+- 스파스 바인딩 연산은 동일 큐 내에서 실행 중인 일반 커맨드 버퍼 작업과도 **자동으로 실행 순서가 정렬되지 않는다**.
+- 따라서 바인딩 작업이 완료된 후 그래픽스/컴퓨트 셰이더에서 리소스를 안전하게 사용하려면 반드시 **세마포어(Semaphore)**를 통해 실행 의존성을 연결해야 한다.
 
 ```c
 VkBindSparseInfo bindInfo{};
-bindInfo.sType                 = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
-bindInfo.waitSemaphoreCount    = 1;
-bindInfo.pWaitSemaphores       = &gfxFinishedSemaphore;  // gfx가 끝날 때까지 대기
-bindInfo.bufferBindCount       = 1;
-bindInfo.pBufferBinds          = &bufferBind;
-bindInfo.imageOpaqueBindCount  = 1;
-bindInfo.pImageOpaqueBinds     = &opaqueBind;
-bindInfo.imageBindCount        = 0;
-bindInfo.signalSemaphoreCount  = 1;
-bindInfo.pSignalSemaphores     = &sparseDoneSemaphore;  // 바인딩 완료 후 시그널
+bindInfo.sType                = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+bindInfo.waitSemaphoreCount   = 1;
+bindInfo.pWaitSemaphores      = &priorWorkFinishedSemaphore; // 선행 작업 완료 대기
+bindInfo.bufferBindCount      = 1;
+bindInfo.pBufferBinds         = &bufferBindInfo;
+bindInfo.signalSemaphoreCount = 1;
+bindInfo.pSignalSemaphores    = &sparseBindCompleteSemaphore;// 바인딩 완료 후 시그널
 
 vkQueueBindSparse(sparseQueue, 1, &bindInfo, VK_NULL_HANDLE);
 ```
 
-> **스펙 원문 (스펙 15.2 발췌)** "The first synchronization scope of each semaphore signal operation defined by this structure includes all sparse binding operations defined by this structure. The second synchronization scope of each semaphore wait operation defined by this structure includes all sparse binding operations defined by this structure."
->> signal은 bind batch 완료 후, wait는 batch 시작 전. graphics/compute는 signal을 받아야 사용 가능.
+---
 
-### 7.3. Timeline semaphore + `vkQueueBindSparse` (1.3+)
+### 7.2. 타임라인 세마포어 연계 (Vulkan 1.2+)
+
+타임라인 세마포어를 사용하면 단조 증가 카운터를 통해 스파스 스트리밍을 정밀하게 제어할 수 있다.
 
 ```c
 VkTimelineSemaphoreSubmitInfo timelineInfo{};
 timelineInfo.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
 timelineInfo.waitSemaphoreValueCount   = 1;
-timelineInfo.pWaitSemaphoreValues      = &waitValue;      // bind 전까지 대기
+timelineInfo.pWaitSemaphoreValues      = &waitValue;
 timelineInfo.signalSemaphoreValueCount = 1;
-timelineInfo.pSignalSemaphoreValues    = &signalValue;    // bind 완료 후 이 값으로 signal
+timelineInfo.pSignalSemaphoreValues    = &signalValue;
 
 VkBindSparseInfo bindInfo{};
-bindInfo.sType                 = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
-bindInfo.pNext                 = &timelineInfo;  // ← timeline 정보 체이닝
-bindInfo.waitSemaphoreCount    = 1;
-bindInfo.pWaitSemaphores       = &timelineSemaphore;
-bindInfo.signalSemaphoreCount  = 1;
-bindInfo.pSignalSemaphores     = &timelineSemaphore;
-bindInfo.bufferBindCount       = 1;
-bindInfo.pBufferBinds          = &bufferBindInfo;
+bindInfo.sType                = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+bindInfo.pNext                = &timelineInfo; // pNext 체이닝 필수 (VUID-VkBindSparseInfo-pNext-03246/03247/03248)
+bindInfo.waitSemaphoreCount   = 1;
+bindInfo.pWaitSemaphores      = &timelineSemaphore;
+bindInfo.signalSemaphoreCount = 1;
+bindInfo.pSignalSemaphores    = &timelineSemaphore;
+bindInfo.bufferBindCount      = 1;
+bindInfo.pBufferBinds         = &bufferBindInfo;
 
 vkQueueBindSparse(sparseQueue, 1, &bindInfo, VK_NULL_HANDLE);
 ```
 
-> **스펙 원문 (VUID-VkBindSparseInfo-pNext-03246/03247/03248)** Timeline semaphore 사용 시 `VkTimelineSemaphoreSubmitInfo` pNext 체이닝 필수. value count가 semaphore 수와 일치해야 함.
+---
+
+## 8. 미바인딩(Unmapped) 영역 접근 가드
+
+스파스 레지던트 리소스에서 물리 메모리가 바인딩되지 않은 영역에 셰이더가 접근할 때의 동작은 디바이스 속성에 좌우된다.
+
+- **`residencyNonResidentStrict == VK_TRUE`**:
+  미바인딩 영역 접근이 **정의된 동작**으로 보장된다. 읽기는 0으로 채워진 것처럼 반환되고, 쓰기는 폐기된다. 하드웨어가 안전성을 보장하므로 별도의 셰이더 가드 없이도 예측 가능한 결과를 얻는다.
+- **`residencyNonResidentStrict == VK_FALSE`**:
+  접근 자체는 안전하지만 **읽기 값이 미정의**다. 0을 가정하면 안 되며, 페이지 테이블이나 클립맵 같은 애플리케이션 레벨 가드가 결과 정확성을 위해 필요하다.
+
+**실무 가드 전략:**
+1. **셰이더 클립핑 및 디스카드**: 클립맵이나 타일 렌더러에서 미적재 영역의 텍셀 샘플링 시 `discard` 처리한다.
+2. **밉맵 클램핑**: 고해상도 밉이 아직 로드되지 않은 상태라면 텍스처 샘플러의 `minLod` 또는 셰이더의 텍스처 조회 함수에서 바인딩 완료된 저해상도 밉으로 강제 클램프한다.
+3. **가시성 페이지 테이블**: CPU가 타일 매핑 상태를 비트셋이나 소형 버퍼로 관리하여 유니폼 버퍼로 셰이더에 전달한다.
 
 ---
 
-## 8. Unmapped 가드
+## 9. 스파스 에일리어싱 (Sparse Aliasing)
 
-**sparse image의 unmapped 영역은 shader가 접근하면 어떻게 되나?** 디바이스 한계에 따라 다름.
+동일한 물리 메모리 영역에 둘 이상의 스파스 리소스 또는 동일 리소스의 서로 다른 블록을 중복 바인딩하여 메모리를 절약하는 기법이다.
 
-> **스펙 원문 (스펙 36.4.2, `residencyNonResidentStrict`)** If `residencyNonResidentStrict == VK_TRUE`, reads/writes to unmapped texels return **undefined** values (드라이버 가드 없음). 셰이더가 그 영역을 안 읽도록 디자인해야 함.
-> If `VK_FALSE` (보통), 구현이 0 또는 정의된 값으로 폴백. 안전하지만 성능 손해 가능.
-
-**실전 가드 패턴:**
-
-| 패턴 | 용도 |
-|------|------|
-| Clip을 셰이더에서 | 클립맵·타일맵에서 unmapped 영역 = `discard` |
-| Compute에서 영역 검사 | `isResident(uv)` 같은 함수가 false면 0/fallback 반환 |
-| Mip 선택 | 큰 mip이 unmapped면 작은 mip으로 fallback |
-| Page table | CPU가 추적. shader에 uniform으로 resident map 전달 |
-
-> **NOTE (스펙 36.7.7 발췌)** "Implementations must provide a guarantee that simultaneously binding sparse blocks while another queue accesses those same sparse blocks via a sparse resource must not access memory owned by another process or otherwise corrupt the system."
->> 동시에 binding + 다른 큐 접근이 **system corruption은 일으키지 않음**. 다만 **읽기/쓰기 결과는 정의되지 않음** (race).
+- 리소스 생성 시 반드시 `SPARSE_ALIASED_BIT`를 지정해야 하며, 물리 디바이스의 `sparseResidencyAliased` 피처가 활성화되어 있어야 한다.
+- 동일한 메모리 블록을 여러 리소스가 동시에 읽고 쓰면 데이터 레이스가 발생하므로, 특정 시점에는 활성화된 하나의 리소스만 접근해야 한다. 리소스 전환 시 큐 배리어와 세마포어로 수명 주기를 제어해야 한다.
 
 ---
 
-## 9. Aliasing
+## 10. 동적 페이지 스트리밍 패턴
 
-여러 리소스가 같은 메모리 블록을 **시간차**로 공유. **한 번에 하나만 resident**해야 함.
+가상 텍스처 렌더러는 카메라 이동에 따라 시야에서 벗어난 타일을 언바인딩하고 새로 시야에 들어온 타일을 바인딩한다.
 
 ```c
-// 리소스 A와 B가 같은 deviceMem[0..BLOCK-1]을 사용
-// 1. A의 page 0을 mem[0]에 묶음 → A 사용 → 언바인딩
-// 2. B의 page 0을 mem[0]에 묶음 → B 사용 → 언바인딩
+// 1. 기존 타일 언바인딩 (memory에 VK_NULL_HANDLE 지정)
+VkSparseMemoryBind unbindBlock{};
+unbindBlock.resourceOffset = oldPageOffset;
+unbindBlock.size           = BLOCK_SIZE;
+unbindBlock.memory         = VK_NULL_HANDLE; // 언바인딩
+unbindBlock.memoryOffset   = 0;
+
+VkSparseBufferMemoryBindInfo unbindInfo{ sparseBuf, 1, &unbindBlock };
+
+// 2. 신규 타일 바인딩
+VkSparseMemoryBind bindBlock{};
+bindBlock.resourceOffset = newPageOffset;
+bindBlock.size           = BLOCK_SIZE;
+bindBlock.memory         = poolMemory;
+bindBlock.memoryOffset   = targetPoolOffset;
+
+VkSparseBufferMemoryBindInfo bindInfo{ sparseBuf, 1, &bindBlock };
+
+// 3. 단일 배치로 언바인딩과 바인딩 동시 제출
+VkSparseBufferMemoryBindInfo batchInfos[2] = { unbindInfo, bindInfo };
+VkBindSparseInfo submitInfo{};
+submitInfo.sType           = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+submitInfo.bufferBindCount = 2;
+submitInfo.pBufferBinds    = batchInfos;
+submitInfo.signalSemaphoreCount = 1;
+submitInfo.pSignalSemaphores    = &streamingDoneSemaphore;
+
+vkQueueBindSparse(sparseQueue, 1, &submitInfo, VK_NULL_HANDLE);
 ```
 
-> **스펙 원문 (스펙 36.6)** `VK_BUFFER_CREATE_SPARSE_ALIASED_BIT` 또는 `VK_IMAGE_CREATE_SPARSE_ALIASED_BIT` 필요. `sparseResidencyAliased` feature + 위 flag 동시 필요.
-
-**주의:**
-
-- 두 리소스의 **모두** `SPARSE_ALIASED_BIT`로 생성되어야 함
-- 같은 메모리 블록이 두 곳에 동시에 묶이면 **둘 중 하나만 사용 가능**. 다른 쪽은 UB.
-- lifetime 관리가 까다로움 → 보통 **queue family ownership** + **세마포어**로 보호
+> [!TIP]
+> 해제와 바인딩 작업을 개별적인 `vkQueueBindSparse` 호출로 쪼개지 않고 단일 `VkBindSparseInfo` 배치에 모아서 제출하면 큐 제출 오버헤드와 동기화 비용을 대폭 줄일 수 있다.
 
 ---
 
-## 10. 전체 흐름 예시
+## 11. 주요 점검 사항
 
-```c
-// 1) 큐 찾기
-auto sparseFamily = findQueueFamily(VK_QUEUE_SPARSE_BINDING_BIT);
-auto sparseQueue   = getQueue(sparseFamily, 0);
+### 11.1. 리소스 생성 단계
+- [ ] `SPARSE_RESIDENCY_BIT` 사용 시 `SPARSE_BINDING_BIT`가 함께 설정되었는지 확인
+- [ ] 스파스 플래그와 `VK_BUFFER_CREATE_PROTECTED_BIT`가 함께 지정되지 않았는지 확인
+- [ ] 디바이스 생성 시 `sparseBinding`, `sparseResidencyBuffer`, `sparseResidencyImage2D` 등 필요한 피처가 활성화되었는지 확인
 
-// 2) sparse buffer 생성
-VkBuffer sparseBuf;
-vkCreateBuffer(device, &(VkBufferCreateInfo){
-    .size  = SIZE,
-    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-    .flags = VK_BUFFER_CREATE_SPARSE_BINDING_BIT
-           | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT
-           | VK_BUFFER_CREATE_SPARSE_ALIASED_BIT,
-}, nullptr, &sparseBuf);
+### 11.2. 바인딩 및 정렬 단계
+- [ ] 버퍼의 `resourceOffset`, `memoryOffset`, `size`가 `VkMemoryRequirements::alignment`의 배수인지 확인
+- [ ] 이미지 타일 바인딩의 오프셋과 크기가 `imageGranularity`의 정수 배수인지 확인
+- [ ] 밉테일 영역을 일반 타일 바인딩이 아닌 불투명 바인딩(`VkSparseImageOpaqueMemoryBindInfo`)으로 처리했는지 확인
+- [ ] 메타데이터 바인딩 시 `VK_SPARSE_MEMORY_BIND_METADATA_BIT` 플래그 지정 확인
+- [ ] 언바인딩 시 `memory`가 `VK_NULL_HANDLE`이어도 `size`는 유효한 블록 크기 배수인지 확인
 
-VkMemoryRequirements req;
-vkGetBufferMemoryRequirements(device, sparseBuf, &req);
-VkDeviceSize BLOCK = req.alignment;  // sparse block size
-
-// 3) device memory (블록 묶음)
-VkDeviceMemory mem;
-vkAllocateMemory(device, &(VkMemoryAllocateInfo){
-    .allocationSize  = NUM_PAGES * BLOCK,
-    .memoryTypeIndex = findMemoryType(req.memoryTypeBits, DEVICE_LOCAL),
-}, nullptr, &mem);
-
-// 4) sparse bind batch
-std::vector<VkSparseMemoryBind> binds;
-for (uint32_t i = 0; i < NUM_PAGES; i++) {
-    binds.push_back({i*BLOCK, BLOCK, mem, i*BLOCK, 0});
-}
-VkSparseBufferMemoryBindInfo bufBind{sparseBuf, (uint32_t)binds.size(), binds.data()};
-
-VkBindSparseInfo info{};
-info.sType                 = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
-info.bufferBindCount       = 1;
-info.pBufferBinds          = &bufBind;
-info.signalSemaphoreCount  = 1;
-info.pSignalSemaphores     = &sparseDoneSemaphore;
-
-vkQueueBindSparse(sparseQueue, 1, &info, VK_NULL_HANDLE);
-
-// 5) graphics 큐에서 사용 (semaphore wait)
-VkPipelineStageFlags stage = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-VkSubmitInfo submit{};
-submit.waitSemaphoreCount = 1;
-submit.pWaitSemaphores    = &sparseDoneSemaphore;
-submit.pWaitDstStageMask  = &stage;
-submit.commandBufferCount = 1;
-submit.pCommandBuffers    = &cmd;  // sparseBuf에 접근
-vkQueueSubmit(gfxQueue, 1, &submit, fence);
-```
+### 11.3. 큐 제출 및 동기화 단계
+- [ ] `vkQueueBindSparse`를 호출하는 큐 패밀리가 `VK_QUEUE_SPARSE_BINDING_BIT`를 지원하는지 확인
+- [ ] 스파스 바인딩 작업 완료를 알리는 세마포어가 그래픽스/컴퓨트 큐의 제출 커맨드와 올바르게 연결되었는지 확인
+- [ ] `residencyNonResidentStrict`가 활성화된 디바이스에서 미바인딩 영역에 접근하지 않도록 셰이더 가드가 갖추어졌는지 확인
 
 ---
 
-## 11. Page streaming — 동적 bind/unbind
+## 12. 빠른 참조 요약
 
-Mega texture 등에서 카메라 이동에 따라 페이지를 실시간으로 bind/unbind한다.
-
-```c
-// 해제 (unbind) — memory = VK_NULL_HANDLE
-VkSparseMemoryBind unbind{};
-unbind.resourceOffset = oldPageOffset;  // 해제할 페이지 시작
-unbind.size           = BLOCK;
-unbind.memory         = VK_NULL_HANDLE; // ← unbind
-unbind.memoryOffset   = 0;
-
-VkSparseBufferMemoryBindInfo unbindInfo{ sparseBuf, 1, &unbind };
-
-// 새 바인딩
-VkSparseMemoryBind bind{};
-bind.resourceOffset = newPageOffset;
-bind.size           = BLOCK;
-bind.memory         = mem;  // 이미 allocate된 memory
-bind.memoryOffset   = memSlot;
-
-VkSparseBufferMemoryBindInfo bindInfo{ sparseBuf, 1, &bind };
-
-// 하나의 batch에 해제 + 바인딩 동시 제출
-VkBindSparseInfo info{};
-info.sType                 = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
-info.bufferBindCount       = 2;
-info.pBufferBinds          = (VkSparseBufferMemoryBindInfo[]){unbindInfo, bindInfo};
-info.signalSemaphoreCount  = 1;
-info.pSignalSemaphores     = &sparseDone;
-
-vkQueueBindSparse(sparseQueue, 1, &info, VK_NULL_HANDLE);
-```
-
-> **주의**: 해제와 바인딩을 **같은 batch**에 넣으면 동기화 cost를 한 번으로 줄일 수 있다. 각각 다른 batch로 제출하면 불필요한 semaphore wait/signal 발생.
-
-> **스펙 원문 (VUID-VkSparseMemoryBind-size-01098)** `size` must be greater than 0. unbind 시에도 size는 block alignment 배수.
-
----
-
-## 12. 자주 빠지는 주의사항 모음
-
-### 11.1. 생성
-
-- [ ] `SPARSE_RESIDENCY_BIT`만 켜고 `SPARSE_BINDING_BIT` 안 켬 (자동 함의지만 명시 권장).
-- [ ] `SPARSE_*_BIT` + `PROTECTED_BIT` 동시 (VUID-None-01888).
-- [ ] `sparseBinding` feature 비활성 + SPARSE_BINDING_BIT (VUID-flags-...).
-- [ ] `sparseResidencyBuffer` 비활성 + `VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT` (VUID-flags-01887).
-- [ ] `sparseResidencyImage2D` 비활성 + `VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT` (VUID-flags-...).
-- [ ] `sparseResidencyAliased` 비활성 + `VK_*_CREATE_SPARSE_ALIASED_BIT` (VUID-flags-...).
-- [ ] `VkDedicatedAllocationBufferCreateInfoNV::dedicatedAllocation = VK_TRUE` + sparse flags (VUID-pNext-01571).
-
-### 11.2. Property / 요구사항
-
-- [ ] `residencyNonResidentStrict == VK_TRUE`인데 셰이더가 unmapped 영역 읽음 → UB.
-- [ ] `vkGetImageSparseMemoryRequirements` 호출했지만 `SPARSE_RESIDENCY_BIT` 안 켜진 image → 결과 없음.
-- [ ] `imageGranularity`를 무시하고 임의의 texel 범위로 image bind → 정렬 오류.
-
-### 11.3. Bind
-
-- [ ] `resourceOffset` 또는 `size`가 block alignment 배수가 아님 (VUID-resourceOffset-09491/09492).
-- [ ] `resourceOffset + size > resourceSize` (VUID-size-01099/01100).
-- [ ] `memory = LAZILY_ALLOCATED` 메모리 (VUID-memory-01097).
-- [ ] `memoryOffset + size > memorySize` (VUID-memoryOffset-01101, size-01102).
-- [ ] `memory != VK_NULL_HANDLE`인데 bind 영역이 memory requirements에 안 맞음 (VUID-memory-01096).
-- [ ] `size == 0` (VUID-size-01098).
-- [ ] mip-tail을 `VkSparseImageMemoryBindInfo`로 묶음 (opaque가 아님) → spec상 무효.
-- [ ] metadata 바인딩 시 `VK_SPARSE_MEMORY_BIND_METADATA_BIT` 누락.
-- [ ] `SINGLE_MIPTAIL_BIT` 없는 format인데 단일 bind로 모든 layer 처리 (layer별 stride 미적용).
-- [ ] Partially used block도 block 전체 크기만큼 메모리 할당 안 함.
-
-### 11.4. 큐 / 동기화
-
-- [ ] graphics/compute 큐에서 `vkQueueBindSparse` 호출 → `VK_QUEUE_SPARSE_BINDING_BIT` 큐 필요.
-- [ ] sparse binding과 graphics/compute 사이 명시적 동기화 누락. **자동 ordering 안 됨**.
-- [ ] `signalSemaphores` 안 두고 `waitSemaphores`에 graphics 시그널만 둠 → graphics가 bind 완료 전에 sparseBuf 접근.
-- [ ] `waitSemaphoreCount` ≠ `pWaitSemaphores` 길이 (VUID-...).
-- [ ] Timeline semaphore 사용 시 `VkTimelineSemaphoreSubmitInfo` pNext 누락 (VUID-pNext-03246/03247/03248).
-
-### 11.5. Aliasing
-
-- [ ] 두 리소스가 `SPARSE_ALIASED_BIT` 둘 다 안 켜진 채 같은 메모리 공유 시도.
-- [ ] 한 메모리 블록을 두 리소스에 **동시에** 묶음 → 둘 중 하나는 깨짐.
-- [ ] `sparseResidencyAliased` feature 비활성.
-
-### 11.6. Unmapped 가드
-
-- [ ] `residencyNonResidentStrict = VK_TRUE`인데 셰이더가 unmapped 영역 접근 (가드 없음).
-- [ ] Mip 선택 알고리즘이 unmapped mip을 무시하지 않음.
-- [ ] Unmapped 영역을 0으로 폴백하는 셰이더가 `residencyNonResidentStrict = VK_TRUE` 환경에서 잘못된 데이터를 받음.
-
----
-
-## 13. 빠른 참조
-
-| 의도 | 권장 |
-|------|------|
-| GB 단위 가상 텍스처 (Mega Texture) | Image sparse + `SINGLE_MIPTAIL_BIT` |
-| 큰 streamed mesh/SSBO | Buffer sparse + residency |
-| 메모리 풀이 부족할 때 동적 매핑 | Sparse + aliasing |
-| 디스크 기반 virtual texturing | Sparse + page table + 셰이더 fallback |
-| 작은 mip이 resident | Mip-tail opaque bind |
-| 큰 mip이 resident | Image bind per mip/region |
-
-| 한계 | 의미 |
-|------|------|
-| `minUniformBufferOffsetAlignment`과 다름 | sparse block size = `VkMemoryRequirements::alignment` |
-| `sparseBinding` | sparse 바인딩 기본 |
-| `sparseResidencyBuffer` | buffer residency |
-| `sparseResidencyImage2D/3D/Samples` | image residency |
-| `sparseResidencyAliased` | aliasing 동시 |
-| `residencyNonResidentStrict` | unmapped = UB (드라이버 가드 없음) |
+| 구현 목적 | 권장 기법 |
+|---|---|
+| 수십 GB 단위 초고해상도 텍스처 | 스파스 이미지 레지던시 + 밉테일 불투명 바인딩 |
+| 대규모 스트리밍 정점/지형 데이터 | 스파스 버퍼 레지던시 |
+| 동적 타일 캐시 풀 재활용 | 스파스 에일리어싱 (`SPARSE_ALIASED_BIT`) |
+| 밉테일 바인딩 방식 판별 | `SINGLE_MIPTAIL_BIT` 확인 (단일 바인딩 vs 레이어별 스트라이드) |
+| 스파스 블록 정렬 기준 | `VkMemoryRequirements::alignment` 값 준수 |

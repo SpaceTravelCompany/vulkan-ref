@@ -5,20 +5,18 @@ slug: swapchain
 
 ## 소개
 
-스왑체인은 **애플리케이션이 그린 결과를 화면에 표시하는 통로**다. OpenGL의 기본 프레임버퍼처럼 동작하지만, 명시적으로 생성/파괴/재생성을 관리해야 하고 동기화 규칙이 까다롭다.
+스왑체인(Swapchain)은 **애플리케이션이 렌더링한 이미지를 화면에 표시하기 위한 버퍼 큐이자 전송 통로**다. 운영체제의 윈도우 시스템과 직접 연동되며, 이미지 획득, 렌더링, 프레젠테이션, 재생성(Recreation) 과정을 명시적인 동기화 객체와 함께 직접 관리해야 한다.
 
-> **용어 정리**
-> - **Surface**: OS가 제공한 윈도우 핸들(Win32 HWND / X11 Window / Wayland surface / Android ANativeWindow)을 추상화한 `VkSurfaceKHR`.
-> - **Presentable Image**: 스왑체인에 속한 `VkImage`. 화면에 표시될 수 있는 특별한 이미지.
-> - **Acquire**: 그릴 수 있는 presentable image을 한 장 빌려오는 것.
-> - **Present**: 그린 이미지를 화면에 표시 요청하는 것.
-> - **Recreate**: 윈도우 크기 변경, 포맷 불가 등 이유로 스왑체인을 다시 만드는 것.
-
-이 문서는 **생성 → acquire → draw → present → 회수/재생성** 흐름과 자주 빠지는 주의사항을 정리한다.
+> **주요 용어**
+> - **서피스 (`VkSurfaceKHR`)**: 네이티브 OS 윈도우 핸들을 추상화한 인스턴스 수준 객체.
+> - **프레젠터블 이미지 (Presentable Image)**: 스왑체인이 소유하며 화면 표시에 쓰이는 `VkImage`.
+> - **획득 (Acquire)**: 렌더링을 위해 스왑체인으로부터 가용 이미지의 인덱스를 빌려오는 과정.
+> - **프레젠트 (Present)**: 렌더링이 완료된 이미지를 디스플레이 엔진에 전달하여 화면 출력을 요청하는 과정.
+> - **재생성 (Recreation)**: 윈도우 크기 변경이나 서피스 상태 변화로 스왑체인을 다시 생성하는 과정.
 
 ---
 
-## 1. 큰 그림
+## 1. 스왑체인 실행 흐름
 
 ```flowchart
 flowchart TD
@@ -35,15 +33,13 @@ flowchart TD
   A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
-**핵심 포인트:**
-
-- 스왑체인은 **반드시 present를 지원하는 큐 패밀리**에서 다뤄야 한다(`vkGetPhysicalDeviceSurfaceSupportKHR`).
-- **presentable image은 항상 single-sampled**. MSAA로 그리고 싶다면 별도 멀티샘플 이미지에 렌더 → resolve → presentable로 복사.
-- 한 번 acquire한 image은 **present 호출 전까지 GPU가 읽고 있을 수 있다.** acquire의 semaphore/fence로 드로우 → present 흐름을 동기화.
+**핵심 설계 규칙:**
+- 스왑체인 이미지는 **항상 단일 샘플링(`VK_SAMPLE_COUNT_1_BIT`)**이다. MSAA를 적용하려면 멀티샘플 렌더 타깃에 먼저 렌더링한 후 resolve 작업을 거쳐 스왑체인 이미지로 복사해야 한다.
+- `vkAcquireNextImageKHR`에서 전달한 세마포어는 GPU 렌더링 명령의 대기 조건(`pWaitDstStageMask`)으로 연결하고, 렌더링 완료 세마포어를 `vkQueuePresentKHR`의 대기 조건으로 넘겨야 레이스 컨디션을 방지할 수 있다.
 
 ---
 
-## 2. `VkSwapchainCreateInfoKHR` — 스왑체인 생성
+## 2. 스왑체인 생성 (`VkSwapchainCreateInfoKHR`)
 
 ```c
 typedef struct VkSwapchainCreateInfoKHR {
@@ -64,363 +60,305 @@ typedef struct VkSwapchainCreateInfoKHR {
     VkCompositeAlphaFlagBitsKHR      compositeAlpha;
     VkPresentModeKHR                 presentMode;
     VkBool32                         clipped;
-    VkSwapchainKHR                   oldSwapchain;        // recreate 시 이전 핸들
+    VkSwapchainKHR                   oldSwapchain; // 재생성 시 이전 스왑체인 핸들 지정
 } VkSwapchainCreateInfoKHR;
 ```
 
-> **스펙 원문 (VUID-VkSwapchainCreateInfoKHR-imageFormat-01273)** `imageFormat` and `imageColorSpace` must match the format and colorSpace members, respectively, of one of the `VkSurfaceFormatKHR` structures returned by `vkGetPhysicalDeviceSurfaceFormatsKHR` for the surface.
->> 스왑체인 포맷/컬러스페이스는 **디바이스가 surface에 대해 보고한 것 중에서만** 골라야 한다. 임의의 포맷을 줄 수 없다.
+---
 
-### 2.1. `minImageCount` — 최소 이미지 수
+### 2.1. 이미지 수 (`minImageCount`)
 
-- `VkSurfaceCapabilitiesKHR::minImageCount` 이상이어야 한다. 보통 2 또는 3.
-- `minImageCount > maxImageCount`일 수 없음.
-- **삼중 버퍼링**: 일반적으로 3 요청. `MAILBOX` 사용 시 핵심.
-- **이중 버퍼링**: 2. 렌더 비용이 화면 갱신보다 길지 않을 때.
-
-> **스펙 원문 (VUID-VkSwapchainCreateInfoKHR-minImageCount-01383)** `minImageCount` must be 1 if `presentMode` is either `SHARED_DEMAND_REFRESH_KHR` or `SHARED_CONTINUOUS_REFRESH_KHR`.
->> 공유 presentable 모드에서는 1만 허용. 일반 모드에서는 보통 2~3.
-
-### 2.2. `imageFormat` / `imageColorSpace` — 색 포맷
-
-| 후보 | 의미 | 비고 |
-|------|------|------|
-| `VK_FORMAT_B8G8R8A8_SRGB` + `COLOR_SPACE_SRGB_NONLINEAR_KHR` | Windows/리눅스 데스크톱 표준 | 가장 무난 |
-| `VK_FORMAT_R8G8B8A8_SRGB` + `COLOR_SPACE_SRGB_NONLINEAR_KHR` | macOS(MoltenVK) | 디바이스 보고에 따라 |
-| `VK_FORMAT_B8G8R8A8_UNORM` + `COLOR_SPACE_SRGB_NONLINEAR_KHR` | sRGB 변환 없이 선형 파이프라인 | HDR 미사용 시 |
-
-> **실전 팁** sRGB transfer를 쓰려면 `_SRGB` 포맷 + `COLOR_SPACE_SRGB_NONLINEAR_KHR` 조합이 거의 필수. 포맷이 다르다면 셰이더에서 수동 감마 보정 필요.
-
-### 2.3. `imageExtent` — 이미지 크기
-
-- `minImageExtent`와 `maxImageExtent` 사이여야 한다(VUID-pNext-07781).
-- `VkSurfaceCapabilitiesKHR::currentExtent`가 0이 아닌 고정 크기일 수 있다(데스크톱). 그 값 그대로 써야 함.
-- 0이면 윈도우가 최소화됐다는 의미 — 스왑체인 생성 보류.
+- `VkSurfaceCapabilitiesKHR::minImageCount` 이상이어야 한다.
+- `maxImageCount`가 0이 아닌 경우(`0`은 제한 없음) `minImageCount`는 `maxImageCount`를 초과할 수 없다.
+- `presentMode`가 `SHARED_DEMAND_REFRESH_KHR` 또는 `SHARED_CONTINUOUS_REFRESH_KHR`이면 `minImageCount`는 반드시 1이어야 한다(VUID-VkSwapchainCreateInfoKHR-minImageCount-01383).
+- **더블 버퍼링**: 통상 2장 요청.
+- **트리플 버퍼링**: 통상 3장 요청. `MAILBOX` 모드에서 GPU 대기 없이 파이프라인을 원활하게 가동하려면 3장을 권장한다.
 
 ```c
-VkSurfaceCapabilitiesKHR caps;
-vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDev, surface, &caps);
-
-VkExtent2D extent = caps.currentExtent;
-if (extent.width == UINT32_MAX) {  // 윈도우 매니저가 유연한 크기 허용
-    extent.width = clamp(windowWidth, caps.minImageExtent.width, caps.maxImageExtent.width);
-    extent.height = clamp(windowHeight, caps.minImageExtent.height, caps.maxImageExtent.height);
+uint32_t imageCount = caps.minImageCount + 1;
+if (caps.maxImageCount > 0 && imageCount > caps.maxImageCount) {
+    imageCount = caps.maxImageCount;
 }
 ```
 
-### 2.4. `imageUsage` — presentable image에 허용되는 용도
+---
 
-- 디폴트: `COLOR_ATTACHMENT_BIT` (드로우 타깃).
-- 추가 가능: `TRANSFER_DST_BIT` (이미지를 다른 이미지에서 복사), `TRANSFER_SRC_BIT` (스크린샷), `STORAGE_BIT` (셰이더에서 읽기/쓰기).
-- `vkGetPhysicalDeviceSurfaceCapabilitiesKHR::supportedUsageFlags`의 부분집합이어야 함(VUID-presentMode-01427).
+### 2.2. 포맷과 색 공간 (`imageFormat`, `imageColorSpace`)
 
-### 2.5. `preTransform` — 화면 회전/미러링
+스왑체인 포맷과 색 공간은 반드시 `vkGetPhysicalDeviceSurfaceFormatsKHR`가 반환한 지원 목록 중에서 선택해야 한다(VUID-VkSwapchainCreateInfoKHR-imageFormat-01273).
 
-- 모바일/태블릿: `SURFACE_TRANSFORM_ROTATE_90_BIT_KHR` 등.
-- 데스크톱: 보통 `IDENTITY_BIT_KHR`.
-- 디바이스 보고한 `supportedTransforms` 안에서 선택.
-
-### 2.6. `compositeAlpha` — 알파 합성 모드
-
-| 값 | 의미 |
-|----|------|
-| `OPAQUE_BIT_KHR` | 알파 무시 (가장 일반적) |
-| `PRE_MULTIPLIED_BIT_KHR` | pre-multiplied alpha |
-| `POST_MULTIPLIED_BIT_KHR` | straight alpha |
-| `INHERIT_BIT_KHR` | OS 기본값 |
-
-> **스펙 원문 (VUID-VkSwapchainCreateInfoKHR-compositeAlpha-parameter)** `compositeAlpha` must be a valid `VkCompositeAlphaFlagBitsKHR` value. 보통 `supportedCompositeAlpha`에서 `OPAQUE_BIT_KHR`를 항상 지원하므로 안전한 선택.
-
-### 2.7. `presentMode` — 표시 모드
-
-자세한 건 §3. 핵심만: `MAILBOX`가 있으면 그게 best.
-
-### 2.8. `clipped`
-
-- `VK_TRUE`: 화면 밖 영역은 클립됨(보이지 않음). `VK_FALSE`: 화면 밖도 그려짐(성능 손해).
-- 거의 항상 `VK_TRUE`.
-
-### 2.9. `oldSwapchain` — 재생성
-
-- 첫 생성 시 `VK_NULL_HANDLE`.
-- 재생성 시 **이전 스왑체인 핸들을 그대로** 넘기면, 이전 이미지의 메모리를 재사용해 빠르고 안전하게 전환할 수 있다. 이전 스왑체인에서 사용 중이던 image은 **새 스왑체인에서도 사용 가능**해질 수 있다.
+| 포맷 및 색 공간 | 용도 및 특징 |
+|---|---|
+| `VK_FORMAT_B8G8R8A8_SRGB`<br>`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` | Windows 및 리눅스 데스크톱의 표준 구성. 감마 보정 자동 처리 |
+| `VK_FORMAT_R8G8B8A8_SRGB`<br>`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` | macOS(MoltenVK) 및 모바일 환경에서 널리 지원 |
+| `VK_FORMAT_B8G8R8A8_UNORM`<br>`VK_COLOR_SPACE_SRGB_NONLINEAR_KHR` | 셰이더에서 수동 감마 보정을 수행할 때 사용 |
 
 ---
 
-## 3. `VkPresentModeKHR` — 표시 모드 비교
+### 2.3. 이미지 해상도 (`imageExtent`)
 
-| 모드 | vsync | 티어링 | 대기 | 입력 지연 | 권장 |
-|------|-------|--------|------|----------|------|
-| `IMMEDIATE` | ❌ | 있음 | 없음 | 매우 낮음 | 디버그/벤치 |
-| `FIFO` (가장 일반적) | ✅ | 없음 | 가능 | 중간 | 기본값 |
-| `FIFO_RELAXED` | ✅ (대기 시) | 마지막에 가능 | 짧음 | 보통 | 가끔 늦는 프레임 |
-| `MAILBOX` | ✅ | 없음 | 거의 없음 | 낮음 | **게임/시뮬레이션 권장** |
-| `FIFO_LATEST_READY` | ✅ | 없음 | 가변 | 가변 | present_id 기반 pacing |
-| `SHARED_DEMAND_REFRESH` | OS | 없음 | OS | OS | 공유 surface |
-| `SHARED_CONTINUOUS_REFRESH` | OS | 없음 | OS | OS | 공유 surface |
-
-> **스펙 원문 (VkPresentModeKHR 설명 일부)**
-> - `IMMEDIATE`: "presentation engine does not wait for a vertical blanking period... may result in visible tearing. No internal queuing."
-> - `MAILBOX`: "presentation engine waits for the next vertical blanking period... An internal single-entry queue is used to hold pending presentation requests. If the queue is full when a new presentation request is received, the new request replaces the existing entry."
-> - `FIFO`: 스펙은 "스왑 인터벌 = 1과 동일 (wglSwapBuffers)" — 반드시 지원되는 가장 일반 모드.
-> - `FIFO_RELAXED`: "스왵 인터벌 = -1과 동일" — 늦지 않으면 FIFO, 늦으면 즉시 표시.
-
-**선택 가이드:**
-
-- **첫 출시**: `FIFO` (모든 디바이스에서 보장). 대기 발생하지만 안정적.
-- **성능 중요**: 디바이스가 `MAILBOX` 지원하면 그걸로. 거의 모든 dGPU/최신 모바일은 지원.
-- **잠금 장치 미사용 (예: 일부 헤드리스 서버)**: `IMMEDIATE` + `clipped = VK_FALSE` 고려.
-- **공유 surface**: `SHARED_*_REFRESH` (Vulkan 1.1+ 또는 `VK_KHR_shared_presentable_image`).
+- `caps.minImageExtent`와 `caps.maxImageExtent` 사이여야 한다.
+- `caps.currentExtent.width`가 `0xFFFFFFFF`가 아니라면 창 관리자가 정한 크기이므로 해당 값을 그대로 사용해야 한다.
+- `currentExtent.width`가 `0xFFFFFFFF`라면 애플리케이션의 윈도우 클라이언트 해상도를 범위 내로 클램핑하여 지정한다.
+- **윈도우 최소화 처리**: 창이 최소화되면 `currentExtent.width == 0 && currentExtent.height == 0`이 반환된다. 이때는 스왑체인을 생성할 수 없으므로 크기가 0보다 커질 때까지 렌더 루프와 재생성을 일시 중단해야 한다.
 
 ```c
-// 지원 모드 조회
-uint32_t modeCount;
-vkGetPhysicalDeviceSurfacePresentModesKHR(physDev, surface, &modeCount, nullptr);
-std::vector<VkPresentModeKHR> modes(modeCount);
-vkGetPhysicalDeviceSurfacePresentModesKHR(physDev, surface, &modeCount, modes.data());
-
-VkPresentModeKHR chosen = VK_PRESENT_MODE_FIFO_KHR;  // 폴백
-if (has(modes, VK_PRESENT_MODE_MAILBOX_KHR)) chosen = VK_PRESENT_MODE_MAILBOX_KHR;
+VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& caps, uint32_t winWidth, uint32_t winHeight) {
+    if (caps.currentExtent.width != UINT32_MAX) {
+        return caps.currentExtent;
+    }
+    VkExtent2D actualExtent = { winWidth, winHeight };
+    actualExtent.width = std::clamp(actualExtent.width, caps.minImageExtent.width, caps.maxImageExtent.width);
+    actualExtent.height = std::clamp(actualExtent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+    return actualExtent;
+}
 ```
 
 ---
 
-## 4. `vkAcquireNextImageKHR` / `vkAcquireNextImage2KHR`
+### 2.4. 기타 주요 파라미터
+
+- **`imageUsage`**: 렌더 타깃으로 직접 쓸 경우 `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`를 지정한다. 후처리 블릿의 목적지로 쓰려면 `VK_IMAGE_USAGE_TRANSFER_DST_BIT`를 추가해야 하며, 항상 `caps.supportedUsageFlags`의 부분집합이어야 한다.
+- **`preTransform`**: 모바일 장치의 회전 처리 플래그다. 데스크톱에서는 `caps.currentTransform`(`VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR`)을 전달한다.
+- **`compositeAlpha`**: 창 관리자와의 알파 블렌딩 방식이다. 일반 창 모드나 전체화면에서는 `VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR`를 사용한다.
+- **`clipped`**: `VK_TRUE`로 설정하면 다른 창에 가려진 픽셀의 처리를 건너뛰어 성능을 절약한다.
+- **`imageArrayLayers`**: 멀티뷰 렌더링이나 스테레오스코픽 렌더링에서 사용한다. 일반 2D 렌더링에서는 1.
+- **`flags`**: `VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR`(멀티 GPU), `VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR`(보호 메모리) 등 특수 용도 플래그. 일반 사용에서는 0.
+- **`imageSharingMode`**: 그래픽스 큐와 프레젠트 큐가 다른 큐 패밀리일 때 `VK_SHARING_MODE_CONCURRENT`로 설정하거나, 소유권 이전 배리어를 사용한다. 동일 큐 패밀리이면 `VK_SHARING_MODE_EXCLUSIVE`(기본값).
+- **`oldSwapchain`**: 스왑체인 재생성 시 기존 핸들을 넘기면 드라이버가 내부 메모리 전환을 최적화한다. `oldSwapchain`으로 지정된 스왑체인은 **retired** 상태가 되며 더 이상 이미지를 획득할 수 없지만, 이미 획득한 이미지는 여전히 프레젠트 가능하다(VUID-VkSwapchainKHR-oldSwapchain-01933). 생성 실패 시에도 retired 상태가 된다. 미획득 이미지는 자동으로 해제된다. deferred retirement가 지원되지 않는 드라이버에서는 `vkDeviceWaitIdle` 비용이 발생할 수 있다. `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`는 네이티브 윈도우가 다른 API에 바인딩되어 있을 때 발생한다.
+
+---
+
+## 3. 프레젠테이션 모드 (`VkPresentModeKHR`)
+
+`vkGetPhysicalDeviceSurfacePresentModesKHR`로 지원 모드를 확인한 뒤 선택한다.
+
+| 모드 | VSync | 화면 티어링 | 대기 시간 | 지연 시간 | 권장 용도 |
+|---|---|---|---|---|---|
+| `VK_PRESENT_MODE_FIFO_KHR` | 적용 | 없음 | VSync 주기에 맞춰 대기 | 보통 | 기본값 (Vulkan 스펙상 항상 지원 보장) |
+| `VK_PRESENT_MODE_MAILBOX_KHR` | 적용 | 없음 | 거의 없음 | 매우 낮음 | **게임 및 실시간 3D 그래픽 (최우선 권장)** |
+| `VK_PRESENT_MODE_FIFO_RELAXED_KHR` | 조건부 적용 | 지연 시 발생 가능 | 짧음 | 보통 | 간헐적 프레임 드롭이 발생하는 시뮬레이션 |
+| `VK_PRESENT_MODE_IMMEDIATE_KHR` | 미적용 | 발생 | 없음 | 최저 | 지연 시간 측정 및 벤치마크 |
+| `VK_PRESENT_MODE_FIFO_LATEST_READY_KHR` | 적용 | 없음 | VSync 직전까지 대기 | 낮음 | MAILBOX 대안 (Vulkan 1.4) |
+| `VK_PRESENT_MODE_SHARED_DEMAND_REFRESH_KHR` | — | — | — | — | 공유 프레젠테이션 (단일 갱신) |
+| `VK_PRESENT_MODE_SHARED_CONTINUOUS_REFRESH_KHR` | — | — | — | — | 공유 프레젠테이션 (지속 갱신) |
+
+> SHARED_* 모드는 `VkSharedPresentSurfaceCapabilitiesKHR::sharedPresentSupportedUsageFlags`를 확인해야 하며, 일반 `supportedUsageFlags`와 다를 수 있다(VUID-VkSwapchainCreateInfoKHR-imageUsage-01384). 또한 SHARED_* 모드 사용 시 `minImageCount`는 1이어야 한다(VUID-VkSwapchainCreateInfoKHR-minImageCount-01383).
+
+- **`FIFO`**: 렌더링이 빨라도 수직 동기 주기에 맞춰 큐가 대기하므로 모니터 주사율을 초과하는 렌더링이 차단된다.
+- **`MAILBOX`**: 큐가 가득 찬 상태에서 새 프레젠트 요청이 들어오면 대기하지 않고 기존 대기 이미지를 최신 렌더링 결과로 대체한다.
+
+---
+
+## 4. 이미지 획득 (`vkAcquireNextImageKHR`)
+
+스왑체인 큐에서 렌더링에 사용할 수 있는 다음 이미지의 인덱스를 가져온다.
 
 ```c
 VkResult vkAcquireNextImageKHR(
     VkDevice        device,
     VkSwapchainKHR  swapchain,
-    uint64_t        timeout,        // 나노초. UINT64_MAX = 무한 대기 (조건부)
-    VkSemaphore     semaphore,      // 둘 중 하나는 VK_NULL_HANDLE이 아니어야 함
-    VkFence         fence,          // (semaphore 또는 fence)
-    uint32_t*       pImageIndex);   // 결과: 그릴 이미지 인덱스
+    uint64_t        timeout,       // 나노초 단위 (UINT64_MAX는 무한 대기)
+    VkSemaphore     semaphore,     // 획득 완료 시 시그널될 세마포어
+    VkFence         fence,         // 획득 완료 시 시그널될 펜스 (둘 중 하나는 필수)
+    uint32_t*       pImageIndex);  // 반환받을 이미지 인덱스
 ```
 
-> **스펙 원문 (VUID-VkAcquireNextImageInfoKHR-semaphore-01782)** `semaphore` and `fence` must not both be equal to `VK_NULL_HANDLE`.
->> 둘 다 null이면 안 된다. 일반적으로 **semaphore**로 GPU 측 신호 전달.
+**반환값에 따른 처리 규칙:**
 
-**반환값 의미:**
+| 반환 코드 | 상태 분석 | 처리 절차 |
+|---|---|---|
+| `VK_SUCCESS` | 이미지 획득 성공 | 정상 렌더링 진행 |
+| `VK_SUBOPTIMAL_KHR` | 이미지는 획득했으나 서피스 속성과 미세 불일치 | 현재 프레임은 정상 렌더링하고, 프레젠트 완료 후 스왑체인 재생성 |
+| `VK_ERROR_OUT_OF_DATE_KHR` | 창 크기 변경 등으로 스왑체인이 완전히 무효화됨 | 현재 프레임 렌더링을 중단하고 **즉시 스왑체인 재생성** 후 재시도 |
+| `VK_ERROR_SURFACE_LOST_KHR` | 서피스 핸들이 유효하지 않게 됨 | 서피스를 처음부터 다시 생성하고 스왑체인 재구축 |
+| `VK_TIMEOUT` | 지정 시간 내에 이미지를 획득하지 못함 | 타임아웃 처리 (재시도 또는 프레임 스킵) |
+| `VK_NOT_READY` | 아직 준비된 이미지가 없음 (비블로킹 폴링 시) | 다음 프레임에서 재시도 |
+| `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT` | 전체화면 독점 모드가 외부 요인으로 해제됨 | 스왑체인 재생성 필요 |
 
-| 반환값 | 의미 | 처리 |
-|--------|------|------|
-| `VK_SUCCESS` | 정상 acquire | 계속 진행 |
-| `VK_SUBOPTIMAL_KHR` | 약간 어긋남 (예: 크기 약간 변경) | 계속 진행 가능, 곧 recreate 권장 |
-| `VK_TIMEOUT` | timeout 내 acquire 실패 | 일반적으로 재시도 또는 프레임 스킵 |
-| `VK_ERROR_OUT_OF_DATE_KHR` | surface 변경, 현재 스왑체인 무효 | **즉시 recreate** |
-| `VK_ERROR_SURFACE_LOST_KHR` | surface 소실 | 윈도우 파괴, 재진입 필요 |
-| `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT` | 전체화면 독점 모드 잃음 | 전체화면 모드 재요청 |
-
-> **스펙 원문** "If an image is acquired successfully, vkAcquireNextImageKHR must either return `VK_SUCCESS` or `VK_SUBOPTIMAL_KHR`. The implementation may return `VK_SUBOPTIMAL_KHR` if the swapchain no longer matches the surface properties exactly, but can still be used for presentation."
->> `SUBOPTIMAL`은 **성공 신호의 일종**. 다음 프레임에 recreate해도 됨.
-
-**timeout 선택:**
-
-- 보통 `UINT64_MAX`로 무한 대기 → 프레임이 늦어도 다음 vsync까지 기다림.
-- `VK_KHR_present_wait` 또는 `presentWait2`가 활성화된 surface에서만 진정한 의미의 무한 대기가 안전(VUID-vkAcquireNextImage2KHR-surface-07784). 그 외에는 큰 값(예: 1초)으로 제한 권장.
-
-### 4.1. Semaphore vs Fence
-
-| | Semaphore | Fence |
-|---|-----------|-------|
-| 신호 받는 곳 | GPU (다음 submit에서 wait) | CPU + GPU |
-| 사용 예 | submit → present 흐름 연결 | `vkWaitForFences`로 CPU가 다음 프레임 진행 결정 |
-| 권장 | 대부분의 경우 | CPU 측에서 frame pacing 직접 제어할 때 |
-
-**대부분의 코드:** acquire의 semaphore를 마지막 submit의 `signalSemaphore`로 두고, 그 submit을 present가 `waitSemaphore`로 기다림.
+> [!WARNING]
+> `semaphore`와 `fence`를 둘 다 `VK_NULL_HANDLE`로 넘기면 스펙 위반이다(VUID-VkAcquireNextImageInfoKHR-semaphore-01782).
+> forward progress를 보장할 수 없는 서피스에서는 `timeout`에 `UINT64_MAX`를 사용하면 안 된다(VUID-vkAcquireNextImage2KHR-surface-07784). 무한 대기는 데드락을 유발할 수 있다.
 
 ---
 
-## 5. `vkQueuePresentKHR` — 표시
+## 5. 화면 표시 요청 (`vkQueuePresentKHR`)
+
+렌더링 작업이 끝난 이미지를 화면에 표시하도록 프레젠트 큐에 요청한다.
 
 ```c
 typedef struct VkPresentInfoKHR {
     VkStructureType          sType;
     const void*              pNext;
     uint32_t                 waitSemaphoreCount;
-    const VkSemaphore*       pWaitSemaphores;    // present 전에 완료돼야 할 신호들
+    const VkSemaphore*       pWaitSemaphores; // 렌더링 완료 세마포어
     uint32_t                 swapchainCount;
-    const VkSwapchainKHR*    pSwapchains;        // 1개 (멀티 디스플레이도 가능)
-    const uint32_t*          pImageIndices;      // 각 스왑체인별 표시할 이미지
-    VkResult*                pResults;           // 각 스왑체인별 결과 (옵션)
+    const VkSwapchainKHR*    pSwapchains;
+    const uint32_t*          pImageIndices;   // 표시할 이미지 인덱스
+    VkResult*                pResults;        // 개별 스왑체인 결과 (단일 시 nullptr 가능)
 } VkPresentInfoKHR;
 
 VkResult vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
 ```
 
-> **스펙 원문 (VUID-vkQueuePresentKHR-pSwapchains-01292)** Each element of pSwapchains must be a swapchain that is created for a surface for which presentation is supported from queue.
->> present를 호출하는 큐가 **그 스왑체인 surface에 대해 present를 지원**해야 함. 아니면 `VK_ERROR_OUT_OF_HOST_MEMORY` 같은 게 아니라 보통 validation 단계에서 잡힘.
-
-> **스펙 원문 (VUID-vkQueuePresentKHR-pWaitSemaphores-01294)** When a semaphore wait operation referring to a binary semaphore defined by the elements of the `pWaitSemaphores` executes on queue, there must be no other queues waiting on the same semaphore.
->> 같은 binary semaphore를 **여러 큐가 동시에 wait하면 안 됨**. acquire의 semaphore는 한 큐에서만 wait.
-
-**반환값 의미:**
-
-- `VK_SUCCESS` 또는 `VK_SUBOPTIMAL_KHR`: 정상.
-- `VK_ERROR_OUT_OF_DATE_KHR`: 즉시 recreate.
-- `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT`: 전체화면 모드 재요청.
-- `VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT`: present timing 큐 가득 참. `VK_KHR_present_id2`/`present_wait2` 경로에서만.
-
-**전형적인 프레임 흐름 (semaphore 동기화):**
-
-```c
-// 1. acquire: presentable image 한 장 빌림
-uint32_t imageIndex;
-VkSemaphore imageAvailable;  // 풀에서 가져옴
-VkSemaphore renderFinished;  // 풀에서 가져옴
-vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
-                      imageAvailable, VK_NULL_HANDLE, &imageIndex);
-
-// 2. graphics 큐에 submit (imageAvailable → 드로우 → renderFinished 시그널)
-VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-VkSubmitInfo submit{};
-submit.waitSemaphoreCount = 1;
-submit.pWaitSemaphores = &imageAvailable;
-submit.pWaitDstStageMask = &waitStage;
-submit.commandBufferCount = 1;
-submit.pCommandBuffers = &cmd;
-submit.signalSemaphoreCount = 1;
-submit.pSignalSemaphores = &renderFinished;
-vkQueueSubmit(graphicsQueue, 1, &submit, VK_NULL_HANDLE);
-
-// 3. present: renderFinished 시그널을 기다린 뒤 표시
-VkPresentInfoKHR present{};
-present.waitSemaphoreCount = 1;
-present.pWaitSemaphores = &renderFinished;
-present.swapchainCount = 1;
-present.pSwapchains = &swapchain;
-present.pImageIndices = &imageIndex;
-vkQueuePresentKHR(presentQueue, &present);
-```
+- `vkQueuePresentKHR` 역시 `VK_ERROR_OUT_OF_DATE_KHR`나 `VK_SUBOPTIMAL_KHR`를 반환할 수 있다. 이 경우 다음 프레임 진입 전에 재생성 플래그를 설정해야 한다.
+- `queue`는 반드시 해당 서피스에 대한 프레젠트 지원(`vkGetPhysicalDeviceSurfaceSupportKHR`)이 확인된 큐여야 한다(VUID-vkQueuePresentKHR-pSwapchains-01292).
+- `pWaitSemaphores`의 바이너리 세마포어를 다른 큐가 동시에 대기하고 있으면 안 된다(VUID-vkQueuePresentKHR-pWaitSemaphores-01294).
 
 ---
 
-## 6. 동기화 / 풀 / 프레임 인 플라이트
+## 6. 비행 중인 프레임 동기화 (Frames-in-Flight)
 
-**세마포어 풀**: acquire/submit/present를 위해 프레임마다 1쌍의 세마포어(`imageAvailable`, `renderFinished`)가 필요. `in_flight_frames` 수만큼 풀링:
+CPU가 GPU의 렌더링 완료를 기다리지 않고 앞서 명령을 기록하려면 다중 프레임 슬롯(통상 2개)을 운용해야 한다.
+
+```
+Frame Slot 0: [ Fence 0 ] [ ImageAvailable 0 ] [ RenderFinished 0 ]
+Frame Slot 1: [ Fence 1 ] [ ImageAvailable 1 ] [ RenderFinished 1 ]
+```
 
 ```c
 constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
-std::vector<VkSemaphore> imageAvailableSemaphores(MAX_FRAMES_IN_FLIGHT);
-std::vector<VkSemaphore> renderFinishedSemaphores(MAX_FRAMES_IN_FLIGHT);
-std::vector<VkFence> inFlightFences(MAX_FRAMES_IN_FLIGHT);
+uint32_t currentFrame = 0;
 
-for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-    vkCreateSemaphore(device, &sci, nullptr, &imageAvailableSemaphores[i]);
-    vkCreateSemaphore(device, &sci, nullptr, &renderFinishedSemaphores[i]);
-    vkCreateFence(device, &fci, nullptr, &inFlightFences[i]);
+void drawFrame() {
+    // 1. 현재 프레임 슬롯의 펜스 대기 (이전 해당 슬롯 작업 완료 확인)
+    vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+
+    // 2. 가용 이미지 인덱스 획득
+    uint32_t imageIndex;
+    VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX,
+        imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreateSwapchain();
+        return;
+    }
+
+    // 3. 동일한 스왑체인 이미지가 아직 다른 프레임에서 작업 중인지 확인
+    if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+    imagesInFlight[imageIndex] = inFlightFences[currentFrame];
+
+    // 4. 커맨드 버퍼 제출
+    vkResetFences(device, 1, &inFlightFences[currentFrame]);
+
+    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount   = 1;
+    submitInfo.pWaitSemaphores      = &imageAvailableSemaphores[currentFrame];
+    submitInfo.pWaitDstStageMask    = waitStages;
+    submitInfo.commandBufferCount   = 1;
+    submitInfo.pCommandBuffers      = &commandBuffers[imageIndex];
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores    = &renderFinishedSemaphores[currentFrame];
+
+    vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]);
+
+    // 5. 화면 프레젠트 요청
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores    = &renderFinishedSemaphores[currentFrame];
+    presentInfo.swapchainCount     = 1;
+    presentInfo.pSwapchains        = &swapchain;
+    presentInfo.pImageIndices      = &imageIndex;
+
+    result = vkQueuePresentKHR(presentQueue, &presentInfo);
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+        framebufferResized = false;
+        recreateSwapchain();
+    }
+
+    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 ```
 
-**swapchain image과 frame index는 다른 차원**이다:
-
-- 스왑체인 image은 보통 2~3장 (드라이버가 결정).
-- `in_flight_frames`는 1~3.
-- 각 frame slot은 **자기 frame의 in-flight fence**와 **자기 frame의 두 세마포어**를 사용.
-- 같은 image이 두 frame slot에 동시에 잡히지 않게 **image-in-flight fence**도 두면 안전 (더블 acquire 방지).
-
-자세한 패턴은 `synchronization` 및 `thread-safety` 문서 참고.
-
 ---
 
-## 7. Recreate (재생성)
+## 7. 스왑체인 재생성 (Recreation)
 
-다음 상황에서 스왑체인을 재생성해야 한다:
-
-- 윈도우 **리사이즈**.
-- `vkAcquireNextImageKHR` / `vkQueuePresentKHR`가 `VK_ERROR_OUT_OF_DATE_KHR` 반환.
-- `VK_SUBOPTIMAL_KHR`이 반복적으로 발생 (선택).
-- 풀스크린 모드 토글.
-
-**재생성 흐름:**
+창 크기가 변경되거나 서피스 상태가 바뀔 때는 스왑체인을 안전하게 재생성해야 한다.
 
 ```c
-// 1. 디바이스가 idle임을 보장 (in-flight 작업이 새 스왑체인을 잘못 보지 않게)
-vkDeviceWaitIdle(device);
+void recreateSwapchain() {
+    int width = 0, height = 0;
+    glfwGetFramebufferSize(window, &width, &height);
+    while (width == 0 || height == 0) { // 창 최소화 시 대기 루프
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+    }
 
-// 2. (옵션) 이전 스왑체인에서 만들어뒀던 image view들을 파괴
-for (auto& view : swapchainImageViews) vkDestroyImageView(device, view, nullptr);
+    // 1. 실행 중인 모든 GPU 작업 대기
+    vkDeviceWaitIdle(device);
 
-// 3. 새 스왑체인 생성 (oldSwapchain = 이전 핸들)
-VkSwapchainCreateInfoKHR sci = ...;
-sci.oldSwapchain = oldSwapchain;
-VkSwapchainKHR newSwapchain;
-vkCreateSwapchainKHR(device, &sci, nullptr, &newSwapchain);
+    // 2. 기존 스왑체인 이미지 뷰 정리
+    for (auto imageView : swapchainImageViews) {
+        vkDestroyImageView(device, imageView, nullptr);
+    }
+    swapchainImageViews.clear();
 
-// 4. 이전 스왑체인 파괴 (new가 만들어졌으니 더 이상 참조하지 않음)
-vkDestroySwapchainKHR(device, oldSwapchain, nullptr);
+    // 3. 서피스 역량 재조회 및 새 스왑체인 생성
+    VkSurfaceCapabilitiesKHR caps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDev, surface, &caps);
+    VkExtent2D newExtent = chooseSwapExtent(caps, width, height);
+
+    VkSwapchainCreateInfoKHR createInfo{};
+    createInfo.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    createInfo.surface          = surface;
+    createInfo.minImageCount    = chooseImageCount(caps);
+    createInfo.imageFormat      = swapchainImageFormat;
+    createInfo.imageColorSpace  = swapchainColorSpace;
+    createInfo.imageExtent      = newExtent;
+    createInfo.imageArrayLayers = 1;
+    createInfo.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.preTransform     = caps.currentTransform;
+    createInfo.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    createInfo.presentMode      = choosePresentMode();
+    createInfo.clipped          = VK_TRUE;
+    createInfo.oldSwapchain     = swapchain; // 기존 스왑체인 핸들 전달
+
+    VkSwapchainKHR newSwapchain;
+    vkCreateSwapchainKHR(device, &createInfo, nullptr, &newSwapchain);
+
+    // 4. 이전 스왑체인 파괴 및 핸들 갱신
+    vkDestroySwapchainKHR(device, swapchain, nullptr);
+    swapchain = newSwapchain;
+
+    // 5. 새 이미지 뷰 생성
+    createImageViews();
+}
 ```
 
-> **팁** `oldSwapchain`을 넘기면, 이전 스왑체인의 image 중 **아직 GPU가 다 쓰지 않은 것**은 자동으로 새 스왑체인에 "이전"으로 들어와 안전하게 사용 가능해진다. 메모리 재사용 효과로도 좋다.
+---
 
-> **주의** `vkDeviceWaitIdle`은 모든 큐를 멈추므로 **프레임 한 프레임이 길어질 수 있다**. 대안: `VK_KHR_swapchain_maintenance1`의 deferred retirement — `oldSwapchain`을 파괴하지 않고 "retired" 상태로 두면, 해당 image을 present가 끝낼 때까지 GPU가 알아서 추적.
+## 8. 주요 점검 사항
+
+### 8.1. 스왑체인 생성
+- [ ] 서피스 지원 포맷과 색 공간 목록(`vkGetPhysicalDeviceSurfaceFormatsKHR`) 내에서 선택했는지 확인
+- [ ] `minImageCount`가 서피스 최소 요구치 이상이며 최댓값을 초과하지 않는지 확인
+- [ ] 윈도우 크기 0 상태에서 스왑체인 생성을 호출하지 않도록 가드했는지 확인
+- [ ] 그래픽스 큐와 프레젠트 큐 패밀리가 다를 경우 `VK_SHARING_MODE_CONCURRENT` 또는 소유권 이전 배리어를 적용했는지 확인
+
+### 8.2. 이미지 획득 및 프레젠트
+- [ ] `vkAcquireNextImageKHR`에 유효한 세마포어나 펜스를 하나 이상 전달했는지 확인
+- [ ] `VK_ERROR_OUT_OF_DATE_KHR` 발생 시 즉시 렌더 루프를 중단하고 재생성을 호출하는지 확인
+- [ ] `VK_SUBOPTIMAL_KHR`를 치명 오류로 취급하지 않고 프레임 출력 후 재생성하도록 처리했는지 확인
+- [ ] 프레젠트 호출에 사용하는 세마포어가 단일 큐 대기 규칙을 위반하지 않는지 확인
+
+### 8.3. 수명 주기 및 재생성
+- [ ] 스왑체인 파괴 전에 해당 스왑체인 이미지를 참조하는 이미지 뷰와 프레임버퍼를 먼저 정리했는지 확인
+- [ ] 재생성 시 `vkDeviceWaitIdle`을 호출하여 비행 중인 GPU 커맨드가 끝났음을 보장했는지 확인
+- [ ] 스왑체인 재생성 시 `oldSwapchain` 멤버에 기존 핸들을 연결했는지 확인
 
 ---
 
-## 8. 자주 빠지는 주의사항 모음
+## 9. 빠른 참조 요약
 
-### 8.1. 생성 단계
-
-- [ ] `minImageCount`가 `VkSurfaceCapabilitiesKHR::minImageCount`보다 작음 → 생성 실패.
-- [ ] `imageFormat` / `imageColorSpace`가 `vkGetPhysicalDeviceSurfaceFormatsKHR`가 보고한 것 중 하나가 아님 (VUID-imageFormat-01273).
-- [ ] `imageExtent`가 `minImageExtent`~`maxImageExtent` 범위 밖 (VUID-pNext-07781).
-- [ ] `minImageCount = 1`로 일반 모드(`FIFO` 등) 생성 → VUID-minImageCount-01383 또는 implicit 제약.
-- [ ] `imageArrayLayers = 0` (VUID-imageArrayLayers-01275).
-- [ ] `flags`에 `DEFERRED_MEMORY_ALLOCATION_BIT_KHR`를 켰는데 `swapchainMaintenance1` feature 비활성 (VUID-swapchainMaintenance1-10157).
-- [ ] `presentMode`가 `MAILBOX`인데 `imageUsage`가 `supportedUsageFlags`의 부분집합이 아님 (VUID-presentMode-01427).
-- [ ] `preTransform`이 `supportedTransforms`에 없음.
-- [ ] `compositeAlpha`이 `supportedCompositeAlpha`에 없음 (보통 `OPAQUE_BIT_KHR`는 안전).
-- [ ] `clipped = VK_FALSE`로 두고 화면 밖도 그림 → 성능 손해, 의도한 경우만.
-- [ ] graphics 큐가 surface에 대해 present를 지원하지 않음 (`vkGetPhysicalDeviceSurfaceSupportKHR` 미확인).
-- [ ] sharingMode `CONCURRENT`인데 `queueFamilyIndexCount < 2` 또는 `pQueueFamilyIndices`가 유효하지 않음 (VUID-imageSharingMode-...).
-
-### 8.2. Acquire 단계
-
-- [ ] semaphore와 fence를 **둘 다** `VK_NULL_HANDLE`로 호출 (VUID-semaphore-01782).
-- [ ] 이미 unsignaled가 아닌 세마포어를 acquire에 전달 (VUID-semaphore-01288).
-- [ ] acquire의 세마포어가 다른 큐에 의해 이미 signal/wait 중인 상태 (VUID-semaphore-01781).
-- [ ] fence가 다른 큐의 미완료 명령에 연결됨 (VUID-fence-10067).
-- [ ] `timeout = UINT64_MAX`인데 forward progress가 보장되지 않는 surface (VUID-surface-07784).
-- [ ] `VK_ERROR_OUT_OF_DATE_KHR`를 무시하고 계속 사용.
-- [ ] `VK_SUBOPTIMAL_KHR`을 에러로 취급해 프레임 드롭.
-- [ ] `UINT64_MAX` 타임아웃을 무한 루프의 안전망으로만 믿고, surface lost/out-of-date 처리를 누락.
-
-### 8.3. Present 단계
-
-- [ ] `pSwapchains`의 surface에 대해 queue가 present를 지원하지 않음 (VUID-pSwapchains-01292).
-- [ ] acquire의 imageAvailable 세마포어를 present의 `pWaitSemaphores`로 직접 넘기는데, **동일한 binary semaphore를 여러 큐가 동시에 wait** (VUID-pWaitSemaphores-01294).
-- [ ] `pWaitSemaphores`의 세마포어가 `VK_SEMAPHORE_TYPE_BINARY`가 아님 (VUID-pWaitSemaphores-03267).
-- [ ] signal되지 않은 세마포어를 `pWaitSemaphores`에 넣음.
-- [ ] `pImageIndices`가 잘못된 인덱스(스왑체인에 없는 슬롯).
-- [ ] `pResults`를 nullptr로 두면서 여러 스왑체인 present → 개별 결과 누락.
-- [ ] 같은 큐에 너무 많은 `vkQueuePresentKHR`를 큐잉하고 `VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT`를 무시.
-
-### 8.4. Recreate / 수명 관리
-
-- [ ] `vkDeviceWaitIdle` 없이 이전 스왑체인을 파괴 → 드로우 중 image 사용.
-- [ ] 이전 스왑체인의 `imageView`를 파괴하지 않고 새 스왑체인을 만들고 그대로 사용.
-- [ ] `oldSwapchain`을 넘기지 않고 매번 새 스왑체인만 생성 → 이전 image이 dangling.
-- [ ] 새 스왑체인의 `imageCount`가 이전과 다른 경우, 이미지 view / 프레임 버퍼를 그대로 사용.
-- [ ] 윈도우 minimize 상태(`currentExtent = 0`)에서 `imageExtent = {0, 0}`으로 생성 → VUID-imageExtent-01689.
-- [ ] 동시 recreate: 두 스레드가 동시에 `vkCreateSwapchainKHR` 호출 (외부 동기화 누락).
-- [ ] fullscreen exclusive 모드 잃은 후 `VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT` 미처리.
-- [ ] `VK_KHR_swapchain_maintenance1`의 deferred retirement을 쓸 때 retired 스왑체인을 영원히 파괴하지 않음.
-
-### 8.5. 일반 / 성능
-
-- [ ] `minImageCount = 2`로 삼중 버퍼링 의도 → 2로 두면 vsync + 늦은 GPU에서 stall. 3 권장.
-- [ ] `MAILBOX`를 모르고 `FIFO`만 사용 → 입력 지연 증가.
-- [ ] `vkAcquireNextImageKHR`의 세마포어를 **매 프레임 새로 생성** → 매 프레임 생성 비용. 풀 사용.
-- [ ] `pResults`를 무시하고 모든 스왑체인을 하나의 `VkResult`로 받으려 함 → 배열로 받기.
-- [ ] 풀스크린 모드 + `MAILBOX` 조합에서 present throttle 누락.
-
----
-
-## 9. 빠른 참조 — 프레임당 스왑체인 흐름
-
-| 단계 | API | 동기화 객체 |
-|------|-----|------------|
-| 그릴 이미지 빌리기 | `vkAcquireNextImageKHR` | `imageAvailable` 세마포어 (시그널) |
-| 그리기 | `vkQueueSubmit(graphicsQueue, ...)` | `imageAvailable` wait, `renderFinished` 시그널 |
-| 표시 | `vkQueuePresentKHR(presentQueue, ...)` | `renderFinished` wait |
-| 다음 프레임 | 위 반복 | fence로 in-flight 추적 |
+| 단계 | 주요 API | 동기화 메커니즘 |
+|---|---|---|
+| **이미지 인덱스 획득** | `vkAcquireNextImageKHR` | `imageAvailableSemaphore` 시그널 |
+| **명령 제출 및 렌더링** | `vkQueueSubmit` | `imageAvailableSemaphore` 대기, `renderFinishedSemaphore` 시그널, 펜스 전달 |
+| **화면 출력 요청** | `vkQueuePresentKHR` | `renderFinishedSemaphore` 대기 |
+| **프레임 교대** | `vkWaitForFences`, `vkResetFences` | CPU에서 프레임 슬롯 동기화 |

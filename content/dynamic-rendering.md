@@ -5,41 +5,36 @@ slug: dynamic-rendering
 
 ## 소개
 
-Dynamic Rendering은 `VkRenderPass`와 `VkFramebuffer` 객체를 미리 만들지 않고, command buffer 기록 시점에 `vkCmdBeginRendering`으로 렌더 타겟을 직접 지정하는 방식이다. [!badge-info:Vulkan 1.3 Core] `VK_KHR_dynamic_rendering`은 **Vulkan 1.3 부터 코어**에 들어왔다 — 1.3 이상에서는 별도 확장으로 활성화할 필요가 없다.
+Dynamic Rendering은 `VkRenderPass`와 `VkFramebuffer` 객체를 사전에 생성하지 않고, 명령 버퍼 기록 시점에 `vkCmdBeginRendering`으로 렌더 타깃을 직접 지정하는 렌더링 방식이다. [!badge-info:Vulkan 1.3 Core] `VK_KHR_dynamic_rendering` 확장은 Vulkan 1.3부터 코어로 승격되어 추가 확장 활성화 없이 바로 사용할 수 있다.
 
-중요한 점은 **Render Pass 개념이 완전히 사라지는 것이 아니라**, 사전에 생성하던 `VkRenderPass` 객체와 `VkFramebuffer` 객체가 사라진다는 것이다. `vkCmdBeginRendering`부터 `vkCmdEndRendering`까지는 여전히 하나의 render pass instance처럼 동작한다.
+이 방식은 렌더 패스 실행 구간 자체를 없애는 것이 아니라 사전 생성 객체(`VkRenderPass`, `VkFramebuffer`)를 생략하는 것이다. `vkCmdBeginRendering`부터 `vkCmdEndRendering`까지의 범위는 여전히 단일 렌더 패스 인스턴스로 동작한다.
 
-기존 방식:
-
-```flowchart
-flowchart TD
-  A["VkRenderPass 생성"]
-  B["VkFramebuffer 생성"]
-  C["VkGraphicsPipelineCreateInfo.renderPass = renderPass"]
-  D["VkGraphicsPipelineCreateInfo.subpass = 0"]
-  E(["vkCmdBeginRenderPass"])
-  F["draw"]
-  G(["vkCmdEndRenderPass"])
-  A --> B --> C --> D --> E --> F --> G
-```
-
-Dynamic Rendering 방식:
+### 렌더링 방식 비교
 
 ```flowchart
 flowchart TD
-  A["VkGraphicsPipelineCreateInfo.renderPass = VK_NULL_HANDLE"]
-  B["VkGraphicsPipelineCreateInfo.pNext = VkPipelineRenderingCreateInfo"]
-  C["이미지 레이아웃을 attachment layout으로 전환"]
-  D(["vkCmdBeginRendering"])
-  E["draw"]
-  F(["vkCmdEndRendering"])
-  G["필요한 다음 layout으로 직접 전환"]
-  A --> B --> C --> D --> E --> F --> G
+  subgraph Traditional["기존 렌더 패스 방식"]
+    A1["VkRenderPass 생성"] --> A2["VkFramebuffer 생성"]
+    A2 --> A3["파이프라인에 renderPass 바인딩"]
+    A3 --> A4["vkCmdBeginRenderPass"]
+    A4 --> A5["vkCmdDraw"]
+    A5 --> A6["vkCmdEndRenderPass"]
+  end
+  subgraph Dynamic["Dynamic Rendering 방식"]
+    B1["VkPipelineRenderingCreateInfo 정의"] --> B2["파이프라인 pNext 연결 (renderPass=NULL)"]
+    B2 --> B3["이미지 레이아웃 배리어 직접 기록"]
+    B3 --> B4["vkCmdBeginRendering"]
+    B4 --> B5["vkCmdDraw"]
+    B5 --> B6["vkCmdEndRendering"]
+    B6 --> B7["다음 작업에 맞춘 레이아웃 배리어 기록"]
+  end
 ```
 
-## 2. 기능 활성화
+---
 
-Vulkan 1.3에서는 core 기능이지만, device 생성 시 `dynamicRendering` feature를 활성화해야 한다. Vulkan 1.2 이하에서 확장으로 쓰면 `VK_KHR_dynamic_rendering`을 enable하고 KHR alias를 사용한다.
+## 1. 기능 활성화
+
+Vulkan 1.3에서는 디바이스 생성 시 `VkPhysicalDeviceDynamicRenderingFeatures` 구조체를 통해 `dynamicRendering` 기능을 활성화해야 한다. Vulkan 1.2 이하 환경에서 확장으로 사용할 때는 `VK_KHR_dynamic_rendering` 디바이스 확장을 명시하고 KHR 별칭 함수를 호출한다.
 
 ```c
 VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures{};
@@ -50,12 +45,14 @@ dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
 VkDeviceCreateInfo deviceCI{};
 deviceCI.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 deviceCI.pNext = &dynamicRenderingFeatures;
-// queue, extension, feature 설정...
+// 큐, 확장, 기본 기능 설정...
 ```
 
-## 3. 파이프라인 생성 시 달라지는 점
+---
 
-기존 그래픽스 파이프라인은 `renderPass`와 `subpass`에 묶인다. Dynamic Rendering에서는 `renderPass = VK_NULL_HANDLE`로 두고, 대신 `VkPipelineRenderingCreateInfo`를 `pNext`에 연결해서 attachment format을 선언한다.
+## 2. 파이프라인 생성과 포맷 계약
+
+기존 그래픽스 파이프라인은 특정 `VkRenderPass`와 서브패스 인덱스에 결합된다. Dynamic Rendering에서는 파이프라인 생성 시 `renderPass = VK_NULL_HANDLE`로 지정하고, `VkPipelineRenderingCreateInfo`를 `VkGraphicsPipelineCreateInfo::pNext` 체인에 연결하여 어태치먼트 포맷을 선언한다.
 
 ```c
 VkFormat colorFormat = swapchainFormat;
@@ -86,66 +83,33 @@ pipelineCI.renderPass = VK_NULL_HANDLE;
 pipelineCI.subpass = 0;
 ```
 
-여기서 `VkPipelineRenderingCreateInfo`는 실제 이미지 뷰를 지정하지 않는다. 파이프라인이 출력할 **포맷 계약**만 정한다. 실제 `VkImageView`, load/store op, clear value, render area는 `vkCmdBeginRendering`에서 지정한다.
+`VkPipelineRenderingCreateInfo`는 실제 이미지 뷰를 참조하지 않으며 파이프라인이 출력할 **포맷 계약(Format Contract)**만 정의한다. 실제 `VkImageView`, 로드/스토어 연산(`loadOp`/`storeOp`), 클리어 값, 렌더링 영역(`renderArea`)은 명령 기록 시점인 `vkCmdBeginRendering`에서 전달한다.
 
 | 항목 | 기존 Render Pass | Dynamic Rendering |
-|------|------------------|-------------------|
-| 파이프라인 생성 | `renderPass` + `subpass` 필요 | `VkPipelineRenderingCreateInfo` 필요 |
-| 타겟 포맷 | `VkRenderPass` attachment description에 있음 | pipeline `pNext`에 직접 지정 |
-| 실제 이미지 뷰 | `VkFramebuffer`에 있음 | `VkRenderingAttachmentInfo::imageView`에 있음 |
-| 렌더 시작 | `vkCmdBeginRenderPass` | `vkCmdBeginRendering` |
-| 레이아웃 전환 | render pass description으로 일부 자동화 | 앱이 barrier로 직접 처리 |
-| 서브패스 | 지원 | 없음 |
+|---|---|---|
+| **파이프라인 생성** | `renderPass` 및 `subpass` 지정 | `VkPipelineRenderingCreateInfo` (`renderPass = NULL`) |
+| **타깃 포맷 명시** | `VkRenderPass` 어태치먼트 기술자 | 파이프라인 `pNext`에 포맷 배열 전달 |
+| **실제 이미지 바인딩** | `VkFramebuffer` 사전 생성 | `VkRenderingAttachmentInfo::imageView` 전달 |
+| **렌더링 시작** | `vkCmdBeginRenderPass` | `vkCmdBeginRendering` |
+| **레이아웃 전환** | 서브패스 및 렌더 패스 정의로 자동화 | 명령 버퍼에 파이프라인 배리어 직접 기록 |
+| **서브패스 지원** | 다중 서브패스 분할 가능 | 단일 패스 구조 (서브패스 미지원) |
 
-## 4. 포맷 일치 규칙
+---
 
-Dynamic Rendering에서 가장 많이 틀리는 부분은 **pipeline의 attachment format과 begin rendering의 image view format이 맞아야 한다**는 점이다.
+## 3. 포맷 일치 규칙
 
-```flowchart
-flowchart TD
-  A["Pipeline 생성 시"]
-  B["VkPipelineRenderingCreateInfo.pColorAttachmentFormats[0] = VK_FORMAT_B8G8R8A8_SRGB"]
-  C["Rendering 시작 시"]
-  D["VkRenderingAttachmentInfo.imageView = 같은 format의 swapchain image view"]
-  A --> B --> C --> D
-```
+Dynamic Rendering에서 파이프라인 생성 시 선언한 포맷과 `vkCmdBeginRendering` 시 바인딩하는 이미지 뷰 포맷은 정확히 일치해야 한다.
 
-규칙은 이렇게 잡으면 된다:
+- `colorAttachmentCount`는 프래그먼트 셰이더 출력 위치(`location`) 개수 및 블렌드 상태의 기준이다.
+- `pColorAttachmentFormats[i]`는 렌더링 시점의 `pColorAttachments[i].imageView` 포맷과 **정확히 일치(equal)**해야 한다(VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08914).
+- 특정 색상 슬롯을 사용하지 않는 경우 파이프라인 포맷을 `VK_FORMAT_UNDEFINED`로 지정할 수 있다.
+- 깊이 버퍼를 사용하는 경우 `depthAttachmentFormat`을 바인딩할 깊이 이미지 뷰 포맷과 일치시킨다.
+- 스텐실 버퍼를 사용하는 경우 `stencilAttachmentFormat`을 실제 스텐실 이미지 뷰 포맷과 일치시킨다.
+- 깊이나 스텐실 어태치먼트를 사용하지 않을 때는 해당 포맷을 `VK_FORMAT_UNDEFINED`로 설정한다.
 
-- `colorAttachmentCount`는 fragment output location 개수와 color blend attachment 개수의 기준이 된다.
-- `pColorAttachmentFormats[i]`는 rendering 시점의 `pColorAttachments[i].imageView` format과 호환되어야 한다.
-- 해당 color slot을 쓰지 않는다면 pipeline 쪽 format을 `VK_FORMAT_UNDEFINED`로 둘 수 있다.
-- depth를 쓰면 `depthAttachmentFormat`을 실제 depth image view format과 맞춘다.
-- stencil을 쓰면 `stencilAttachmentFormat`을 실제 stencil image view format과 맞춘다.
-- depth/stencil attachment를 안 쓰면 해당 format은 `VK_FORMAT_UNDEFINED`다.
+### 다중 어태치먼트 (G-Buffer 예시)
 
-예를 들어 color만 있는 swapchain pass라면:
-
-```c
-VkPipelineRenderingCreateInfo renderingCI{};
-renderingCI.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-renderingCI.colorAttachmentCount = 1;
-renderingCI.pColorAttachmentFormats = &swapchainFormat;
-renderingCI.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
-renderingCI.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-```
-
-color + depth pass라면:
-
-```c
-VkFormat colorFormats[] = {
-    VK_FORMAT_R16G16B16A16_SFLOAT,
-};
-
-VkPipelineRenderingCreateInfo renderingCI{};
-renderingCI.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-renderingCI.colorAttachmentCount = 1;
-renderingCI.pColorAttachmentFormats = colorFormats;
-renderingCI.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-renderingCI.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
-```
-
-G-buffer처럼 color attachment가 여러 개면 pipeline 생성 시의 format 배열 순서가 shader의 output location과 맞아야 한다.
+색상 출력이 여러 개인 경우 파이프라인 포맷 배열의 순서는 셰이더의 `layout(location = ...)` 순서와 일치해야 한다.
 
 ```glsl
 layout(location = 0) out vec4 outAlbedo;
@@ -155,9 +119,9 @@ layout(location = 2) out vec4 outMaterial;
 
 ```c
 VkFormat gbufferFormats[] = {
-    VK_FORMAT_R8G8B8A8_SRGB,       // location 0
+    VK_FORMAT_R8G8B8A8_SRGB,            // location 0
     VK_FORMAT_A2B10G10R10_UNORM_PACK32, // location 1
-    VK_FORMAT_R8G8B8A8_UNORM,      // location 2
+    VK_FORMAT_R8G8B8A8_UNORM,           // location 2
 };
 
 VkPipelineRenderingCreateInfo renderingCI{};
@@ -165,11 +129,14 @@ renderingCI.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 renderingCI.colorAttachmentCount = 3;
 renderingCI.pColorAttachmentFormats = gbufferFormats;
 renderingCI.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+renderingCI.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
 ```
 
-## 5. `vkCmdBeginRendering`
+---
 
-실제 렌더 타겟은 `VkRenderingAttachmentInfo`와 `VkRenderingInfo`로 지정한다.
+## 4. `vkCmdBeginRendering` 명령 기록
+
+렌더 타깃 설정은 `VkRenderingAttachmentInfo`와 `VkRenderingInfo`를 작성하여 전달한다.
 
 ```c
 VkRenderingAttachmentInfo colorAttachment{};
@@ -177,8 +144,6 @@ colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
 colorAttachment.imageView = swapchainImageView;
 colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 colorAttachment.resolveMode = VK_RESOLVE_MODE_NONE;
-colorAttachment.resolveImageView = VK_NULL_HANDLE;
-colorAttachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 colorAttachment.clearValue.color = {{0.02f, 0.02f, 0.03f, 1.0f}};
@@ -211,37 +176,34 @@ vkCmdDraw(cmd, vertexCount, 1, 0, 0);
 vkCmdEndRendering(cmd);
 ```
 
-필드 의미:
+### 주요 필드 명세
 
-- `renderArea`: attachment에서 실제로 렌더링할 영역. 0x0이면 아무것도 그리지 않는다.
-- `layerCount`: 렌더링할 layer 수. cubemap/array texture 렌더링에서 중요하다.
-- `viewMask`: multiview 사용 시 view bitmask. 일반 렌더링은 0.
-- `colorAttachmentCount`: color attachment slot 개수.
-- `pColorAttachments`: color attachment 배열. pipeline 생성 시 format 배열과 같은 slot 순서를 쓴다.
-- `pDepthAttachment`: depth attachment. depth test/write를 쓰면 필요하다.
-- `pStencilAttachment`: stencil attachment. stencil test/write를 쓰면 필요하다.
+- `renderArea`: 어태치먼트 내에서 렌더링을 수행할 사각형 영역. 가로/세로가 0이면 그리지 않는다.
+- `layerCount`: 렌더링 대상 레이어 수(큐브맵이나 텍스처 배열 렌더링 시 지정).
+- `viewMask`: 멀티뷰 렌더링 시 대상 뷰 비트마스크(일반 렌더링은 0).
+- `pColorAttachments`: 색상 어태치먼트 구조체 배열. 파이프라인 생성 시 등록한 포맷 순서와 일치해야 한다.
+- `pDepthAttachment` / `pStencilAttachment`: 깊이 및 스텐실 테스트/쓰기용 어태치먼트 정보.
 
-## 6. 레이아웃 전환은 직접 해야 한다
+---
 
-기존 Render Pass는 `initialLayout`, `finalLayout`, subpass layout을 통해 attachment layout transition을 어느 정도 render pass 안에 넣을 수 있었다. Dynamic Rendering은 그런 attachment description이 없으므로, 렌더링 전후의 layout transition을 명령 버퍼에 직접 기록해야 한다.
+## 5. 이미지 레이아웃 전환
 
-swapchain color attachment의 전형적인 흐름:
+기존 렌더 패스는 `initialLayout`과 `finalLayout`을 통해 어태치먼트 레이아웃 전환을 자동 수행했으나, Dynamic Rendering은 어태치먼트 기술자가 없으므로 렌더링 전후의 레이아웃 배리어를 명령 버퍼에 직접 기록해야 한다.
 
-```flowchart
-flowchart TD
-  A(["vkAcquireNextImageKHR"]) --> B["swapchain image"]
-  B --> C["PRESENT_SRC_KHR → COLOR_ATTACHMENT_OPTIMAL"]
-  C --> D(["vkCmdBeginRendering"])
-  D --> E["draw"]
-  E --> F(["vkCmdEndRendering"])
-  F --> G["swapchain image"]
-  G --> H["COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR"]
-  H --> I(["vkQueuePresentKHR"])
+스왑체인 이미지의 전형적인 레이아웃 전환 절차:
+
+```
+vkAcquireNextImageKHR
+  → 배리어: UNDEFINED (또는 PRESENT_SRC_KHR) → COLOR_ATTACHMENT_OPTIMAL
+  → vkCmdBeginRendering
+  → 드로우 콜 기록
+  → vkCmdEndRendering
+  → 배리어: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR
+  → vkQueuePresentKHR
 ```
 
-예시 barrier:
-
 ```c
+// 렌더링 전: COLOR_ATTACHMENT_OPTIMAL로 전환
 VkImageMemoryBarrier2 toColor{};
 toColor.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
 toColor.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
@@ -251,23 +213,17 @@ toColor.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
 toColor.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 toColor.image = swapchainImage;
-toColor.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-toColor.subresourceRange.baseMipLevel = 0;
-toColor.subresourceRange.levelCount = 1;
-toColor.subresourceRange.baseArrayLayer = 0;
-toColor.subresourceRange.layerCount = 1;
+toColor.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-VkDependencyInfo dep{};
-dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-dep.imageMemoryBarrierCount = 1;
-dep.pImageMemoryBarriers = &toColor;
-
-vkCmdPipelineBarrier2(cmd, &dep);
+VkDependencyInfo depInfo{};
+depInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+depInfo.imageMemoryBarrierCount = 1;
+depInfo.pImageMemoryBarriers = &toColor;
+vkCmdPipelineBarrier2(cmd, &depInfo);
 ```
 
-렌더링 후 present로 넘길 때:
-
 ```c
+// 렌더링 후: PRESENT_SRC_KHR로 전환
 VkImageMemoryBarrier2 toPresent{};
 toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
 toPresent.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -277,38 +233,32 @@ toPresent.dstAccessMask = 0;
 toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 toPresent.image = swapchainImage;
-toPresent.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-toPresent.subresourceRange.baseMipLevel = 0;
-toPresent.subresourceRange.levelCount = 1;
-toPresent.subresourceRange.baseArrayLayer = 0;
-toPresent.subresourceRange.layerCount = 1;
+toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 
-VkDependencyInfo dep{};
-dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-dep.imageMemoryBarrierCount = 1;
-dep.pImageMemoryBarriers = &toPresent;
-
-vkCmdPipelineBarrier2(cmd, &dep);
+depInfo.pImageMemoryBarriers = &toPresent;
+vkCmdPipelineBarrier2(cmd, &depInfo);
 ```
 
-`oldLayout = VK_IMAGE_LAYOUT_UNDEFINED`는 이전 내용을 버려도 될 때만 사용한다. 이전 frame 결과를 보존해야 하거나 `loadOp = LOAD`를 쓴다면 실제 현재 layout에서 전환해야 한다.
+> `oldLayout = VK_IMAGE_LAYOUT_UNDEFINED`는 이전 픽셀 내용을 버릴 때만 유효하다. 이전 프레임 결과를 유지하거나 `loadOp = VK_ATTACHMENT_LOAD_OP_LOAD`를 적용할 때는 실제 이전 레이아웃을 정확히 명시해야 한다.
 
-## 7. Load/Store Op와 Clear
+---
 
-Dynamic Rendering에서도 attachment의 load/store 개념은 그대로 있다. 다만 `VkAttachmentDescription`이 아니라 `VkRenderingAttachmentInfo`에 직접 쓴다.
+## 6. 어태치먼트 연산 (Load / Store / MSAA Resolve)
+
+`VkRenderingAttachmentInfo`에서 로드/스토어 동작을 직접 정의한다.
 
 | 목적 | `loadOp` | `storeOp` |
-|------|----------|-----------|
-| 매 프레임 새로 지우고 그리기 | `CLEAR` | `STORE` |
-| 이전 내용 위에 이어 그리기 | `LOAD` | `STORE` |
-| depth prepass 후 depth 버릴 때 | `CLEAR` 또는 `LOAD` | `DONT_CARE` |
-| 임시 중간 타겟 | 상황에 따라 | `DONT_CARE` 가능 |
+|---|---|---|
+| 프레임 시작 시 지우고 새로 그리기 | `CLEAR` | `STORE` |
+| 이전 결과물 위에 덮어 그리기 | `LOAD` | `STORE` |
+| 깊이 프리패스 후 깊이 버퍼 폐기 | `CLEAR` 또는 `LOAD` | `DONT_CARE` |
+| 임시 중간 텍스처 | 용도에 따름 | `DONT_CARE` |
 
-`loadOp = CLEAR`일 때만 `clearValue`가 의미 있다. `loadOp = LOAD`를 쓰려면 attachment 이미지의 이전 내용이 유효하고, 그 내용을 읽을 수 있도록 이전 작업과 동기화되어 있어야 한다.
+`loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR`일 때만 `clearValue`가 유효하다. `LOAD`를 사용할 때는 이전 작업의 쓰기가 완료되고 레이아웃이 유효하도록 동기화가 선행되어야 한다.
 
-## 8. MSAA와 Resolve
+### 다중 샘플링 및 리졸브 (MSAA Resolve)
 
-MSAA를 쓰는 경우 파이프라인의 `VkPipelineMultisampleStateCreateInfo::rasterizationSamples`와 attachment sample count가 맞아야 한다. resolve가 필요하면 color attachment에 resolve 대상도 같이 지정한다.
+MSAA를 활성화할 때는 파이프라인의 `VkPipelineMultisampleStateCreateInfo::rasterizationSamples`와 어태치먼트의 샘플 수가 일치해야 한다. 렌더링과 동시에 단일 샘플 이미지로 리졸브하려면 어태치먼트 구조체에 리졸브 대상을 함께 지정한다.
 
 ```c
 VkRenderingAttachmentInfo msaaColor{};
@@ -323,34 +273,29 @@ msaaColor.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 msaaColor.clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 ```
 
-이 경우 MSAA attachment는 multisampled image이고, resolve image는 single-sampled image다. 둘 다 적절한 layout으로 전환되어 있어야 한다.
+---
 
-## 9. Secondary Command Buffer
+## 7. 세컨더리 커맨드 버퍼 상속
 
-Dynamic Rendering 안에서 secondary command buffer를 실행하려면 primary rendering에 `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`를 지정한다.
+Dynamic Rendering 범위 내부에서 세컨더리 커맨드 버퍼(`VkCommandBuffer`)를 실행하려면 프라이머리 렌더링 플래그에 `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`를 지정한다.
 
 ```c
 VkRenderingInfo renderingInfo{};
 renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
 renderingInfo.flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT;
-renderingInfo.renderArea = renderArea;
-renderingInfo.layerCount = 1;
-renderingInfo.colorAttachmentCount = 1;
-renderingInfo.pColorAttachments = &colorAttachment;
+// ... 어태치먼트 설정 ...
 
 vkCmdBeginRendering(primaryCmd, &renderingInfo);
 vkCmdExecuteCommands(primaryCmd, secondaryCount, secondaryCmds);
 vkCmdEndRendering(primaryCmd);
 ```
 
-secondary command buffer를 기록할 때는 `VkCommandBufferInheritanceRenderingInfo`를 `VkCommandBufferInheritanceInfo::pNext`에 연결해서 attachment format 정보를 알려줘야 한다.
+세컨더리 커맨드 버퍼 기록 시에는 `VkCommandBufferInheritanceRenderingInfo`를 `VkCommandBufferInheritanceInfo::pNext` 체인에 연결하여 프라이머리와 동일한 어태치먼트 포맷 및 샘플 수 정보를 전달해야 한다.
 
 ```c
 VkCommandBufferInheritanceRenderingInfo inheritanceRendering{};
 inheritanceRendering.sType =
     VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-inheritanceRendering.flags = 0;
-inheritanceRendering.viewMask = 0;
 inheritanceRendering.colorAttachmentCount = 1;
 inheritanceRendering.pColorAttachmentFormats = &colorFormat;
 inheritanceRendering.depthAttachmentFormat = depthFormat;
@@ -372,60 +317,54 @@ vkCmdDraw(secondaryCmd, vertexCount, 1, 0, 0);
 vkEndCommandBuffer(secondaryCmd);
 ```
 
-secondary command buffer는 `vkCmdBeginRendering`/`vkCmdEndRendering`을 직접 호출하지 않는다. primary가 dynamic rendering scope를 열고, secondary는 그 안에서 실행될 draw command를 담는다.
-
-## 10. Suspend / Resume
-
-`VkRenderingInfo::flags`에는 rendering scope를 나눠 기록하기 위한 플래그도 있다.
-
-- `VK_RENDERING_SUSPENDING_BIT`: 현재 rendering scope를 끝내지 않고 일시 중단한다.
-- `VK_RENDERING_RESUMING_BIT`: 이전에 suspend한 rendering scope를 이어받는다.
-- `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`: 내부 draw가 secondary command buffer로 온다.
-
-suspend/resume은 렌더링 구간 사이에 다른 명령을 끼워 넣기 위한 일반적인 도구가 아니다. 같은 render pass instance를 여러 command buffer 기록 구간으로 나눌 필요가 있을 때 쓰는 기능이고, attachment 정보가 이어지는 구간끼리 일관되어야 한다.
-
-## 11. Input Attachment와 Local Read
-
-기본 Dynamic Rendering에는 기존 subpass가 없다. 그래서 전통적인 Render Pass의 input attachment + `subpassLoad()` 모델을 그대로 가져올 수 없다.
-
-Vulkan 1.4 또는 `VK_KHR_dynamic_rendering_local_read`를 사용하면 Dynamic Rendering에서도 local read 계열 기능을 사용할 수 있다. 이때는 `VkRenderingInputAttachmentIndexInfo` 같은 구조체로 shader input attachment index와 rendering attachment location을 연결한다.
-
-하지만 실무 판단은 여전히 분리해서 봐야 한다:
-
-- 단순 color/depth pass, post-process, swapchain render는 Dynamic Rendering이 간결하다.
-- 여러 subpass와 input attachment를 적극적으로 써서 tile memory 최적화를 노리는 모바일/TBDR 경로는 기존 Render Pass가 더 명확할 수 있다.
-- Vulkan 1.4 local read는 Dynamic Rendering의 기능 공백을 줄이지만, 기존 subpass 설계를 그대로 대체한다고 가정하면 안 된다.
-
-## 12. 자주 나는 실수
-
-| 증상 | 흔한 원인 |
-|------|-----------|
-| 파이프라인 생성 실패 | `renderPass = VK_NULL_HANDLE`인데 `VkPipelineRenderingCreateInfo`를 pNext에 안 넣음 |
-| validation: format mismatch | pipeline의 color/depth/stencil format과 begin rendering image view format 불일치 |
-| 화면이 안 나옴 | swapchain image를 `COLOR_ATTACHMENT_OPTIMAL`로 전환하지 않음 |
-| present 실패/경고 | rendering 후 `PRESENT_SRC_KHR`로 전환하지 않음 |
-| clear가 안 됨 | `loadOp = CLEAR`가 아니거나 `clearValue`를 다른 attachment에 설정 |
-| depth가 이상함 | pipeline depth format, depth image format, `pDepthAttachment` 불일치 |
-| secondary command buffer validation | primary에 `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT` 누락 또는 inheritance format 누락 |
-| MSAA validation | pipeline sample count와 attachment sample count 불일치 |
-
-## 13. 선택 기준
-
-Dynamic Rendering을 기본값으로 쓰기 좋은 경우:
-
-- render pass가 하나의 subpass로 끝난다.
-- swapchain color + depth처럼 attachment 구성이 단순하다.
-- framebuffer 객체를 attachment 조합마다 만들기 싫다.
-- 렌더 타겟 조합이 런타임에 자주 바뀐다.
-- 데스크탑/현대 Vulkan 1.3+ 경로를 우선한다.
-
-기존 Render Pass가 여전히 좋은 경우:
-
-- 여러 subpass 의존성을 명확히 모델링해야 한다.
-- input attachment와 tile memory 최적화가 핵심이다.
-- 모바일/TBDR에서 대역폭 최적화가 중요하다.
-- legacy Vulkan 1.0/1.1 경로와 호환성이 필요하다.
-
-요약하면, Dynamic Rendering은 **파이프라인을 render pass 객체가 아니라 attachment format 계약에 묶는 방식**이다. 코드 구조는 단순해지지만, 이미지 layout transition과 attachment 일관성은 앱이 더 직접 책임진다.
+세컨더리 커맨드 버퍼 내부에서는 `vkCmdBeginRendering`이나 `vkCmdEndRendering`을 호출할 수 없다. 프라이머리 커맨드 버퍼가 연 렌더링 범위 내에서 드로우 명령만 수행한다.
 
 ---
+
+## 8. Suspend 및 Resume
+
+`VkRenderingInfo::flags`를 활용하면 단일 렌더 패스 범위를 분할 기록할 수 있다.
+
+- `VK_RENDERING_SUSPENDING_BIT`: 현재 렌더링 범위를 완료하지 않고 일시 중단한다.
+- `VK_RENDERING_RESUMING_BIT`: 이전에 일시 중단한 렌더링 범위를 이어서 재개한다.
+
+이 플래그는 렌더링 도중 임의의 다른 파이프라인 작업을 삽입하기 위한 용도가 아니다. 동일한 렌더 패스 인스턴스를 여러 명령 버퍼 제출 단위로 분할해야 할 때 사용하며, 연결되는 구간의 어태치먼트 구성과 포맷이 일치해야 한다.
+
+---
+
+## 9. 로컬 읽기(Local Read)와 서브패스 대체
+
+기본 Dynamic Rendering은 서브패스 개념을 지원하지 않으므로 전통적인 `subpassLoad()`를 직접 사용할 수 없다.
+
+Vulkan 1.4 또는 `VK_KHR_dynamic_rendering_local_read` 확장을 사용하고 `dynamicRenderingLocalRead` 피처를 활성화하면, `VkRenderingInputAttachmentIndexInfo` 구조체(또는 `vkCmdSetRenderingInputAttachmentIndicesKHR`)로 셰이더 입력 어태치먼트 인덱스와 렌더링 어태치먼트 위치를 매핑해 로컬 읽기가 가능하다. 이때 입력 첨부로 읽힐 이미지는 `VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR` 레이아웃으로 전환되어 있어야 한다.
+
+### Dynamic Rendering vs Render Pass 선택 기준
+
+- 단순 색상/깊이 렌더링, 포스트 프로세싱, 스왑체인 출력 → **Dynamic Rendering** 권장
+- 렌더 타겟 조합이 런타임에 자주 바뀐다 → **Dynamic Rendering**
+- 파이프라인 생성 시 렌더 패스 객체 의존성을 제거하고 싶다 → **Dynamic Rendering**
+- 멀티샘플(MSAA) 어테치먼트와 리졸브 이미지를 동시에 관리 → **Dynamic Rendering** (단, MSAA·리졸브 이미지 모두 적절한 레이아웃 전환 필요)
+- G-Buffer 대역폭 최적화가 중요한 모바일/TBDR 다중 패스 → **전통적 VkRenderPass** 서브패스가 직관적
+- 서브패스 간 자동 메모리 의존성 관리를 원함 → **전통적 VkRenderPass**
+- 기존 코드베이스가 VkRenderPass 기반 → 마이그레이션 비용 고려
+
+---
+
+## 10. 문제 해결 가이드
+
+| 발생 현상 | 주요 원인 및 조치 |
+|---|---|
+| **파이프라인 생성 오류** | `renderPass = VK_NULL_HANDLE`인데 `VkPipelineRenderingCreateInfo`를 `pNext`에 누락함 |
+| **어태치먼트 포맷 불일치 경고** | 파이프라인 포맷 배열과 `vkCmdBeginRendering` 이미지 뷰 포맷 불일치 |
+| **화면 미출력(검은 화면)** | 렌더링 전 스왑체인 이미지를 `COLOR_ATTACHMENT_OPTIMAL`로 전환하지 않음 |
+| **프레젠테이션 실패** | 렌더링 종료 후 이미지를 `PRESENT_SRC_KHR` 레이아웃으로 전환하지 않음 |
+| **클리어 미작동** | `loadOp`가 `CLEAR`가 아니거나 `clearValue`를 엉뚱한 어태치먼트에 할당함 |
+| **깊이 판정 오류** | 파이프라인, 이미지 뷰, `pDepthAttachment`의 포맷 불일치 |
+| **세컨더리 버퍼 검증 실패** | 프라이머리의 `SECONDARY_COMMAND_BUFFERS_BIT` 누락 또는 상속 포맷 불일치 |
+| **MSAA 검증 실패** | 파이프라인 래스터화 샘플 수와 어태치먼트 샘플 수 불일치 |
+
+---
+
+## 11. 요약
+
+Dynamic Rendering은 그래픽스 파이프라인을 특정 `VkRenderPass` 객체 대신 **어태치먼트 포맷 계약**에 결합하는 방식이다. `VkRenderPass` 및 `VkFramebuffer` 객체 생성과 호환성 관리 비용이 사라지는 대신, 이미지 레이아웃 전환과 동기화 배리어는 애플리케이션이 직접 명령 버퍼에 기록해야 한다.

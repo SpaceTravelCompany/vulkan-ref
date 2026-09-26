@@ -3,38 +3,39 @@ title: Render Pass & 서브패스
 slug: render-pass
 ---
 
-서브패스(Subpass)는 Vulkan 렌더 패스의 핵심 개념이다. 하나의 렌더 패스는 여러 개의 서브패스로 구성되며, 각 서브패스는 **동일한 framebuffer attachment 집합에 대해 파이프라인의 실행 단위를 나누는 방법**이다.
+## 소개
 
-> **왜 서브패스가 필요할까?** 예를 들어 Deferred Shading을 생각해보자. 먼저 GBuffer에 재질/법선 정보를 그리고, 그 결과를 읽어서 라이팅을 계산한다. 두 단계 모두 같은 버퍼를 쓰는데, 만약 서브패스가 없다면 GBuffer를 VRAM에 썼다가 다시 읽어야 한다. 하지만 서브패스로 나누면 GPU가 **on-chip 메모리에서 바로 읽어가** 쓸 수 있어서 대역폭을 크게 절약한다.
+서브패스(Subpass)는 Vulkan 렌더 패스를 구성하는 실행 단위다. 하나의 렌더 패스(`VkRenderPass`)는 하나 이상의 서브패스로 나뉘며, 각 서브패스는 동일한 프레임버퍼 어태치먼트(attachment) 집합을 공유하면서 렌더링 파이프라인 단계를 분할 실행한다.
 
-서브패스의 목적은 **타일 기반 GPU(TBDR)에서 on-chip 메모리를 최대한 활용**하고, **호스트(CPU) 개입 없이 GPU 내에서 attachment 데이터를 재사용**하는 데 있다.
+핵심 목적은 타일 기반 렌더링(TBDR, Tile-Based Deferred Rendering) 아키텍처에서 온칩(on-chip) 타일 메모리를 최대한 활용하고, CPU 개입 없이 GPU 내부에서 어태치먼트 데이터를 직접 재사용하여 VRAM 대역폭 소모를 줄이는 데 있다.
 
-> **초보자 용어 정리**
-> - **Attachment**: 렌더링 결과를 저장하는 버퍼 (색상, 깊이 등)
-> - **Framebuffer**: Attachment들을 묶은 것
-> - **Input Attachment**: 다른 서브패스의 결과를 읽는 특수한 방식
-> - **TBDR (Tile-Based Deferred Rendering)**: 모바일 GPU의 대표적 구조. 화면을 작은 타일로 나눠서 on-chip에서 처리
+| 용어 | 정의 |
+|---|---|
+| **Attachment** | 색상이나 깊이/스텐실 등 렌더링 결과를 저장하거나 읽는 이미지 뷰 |
+| **Framebuffer** | 렌더 패스에서 사용할 어태치먼트 이미지 뷰 바인딩 집합 |
+| **Input Attachment** | 프래그먼트 셰이더에서 동일 픽셀 위치의 이전 서브패스 결과를 읽는 특수 어태치먼트 |
+| **TBDR** | 화면을 작은 타일 단위로 나누어 온칩 메모리에서 렌더링한 뒤 프레임버퍼로 출력하는 GPU 구조 |
 
 ---
 
 ## 1. 서브패스 개념
 
-Vulkan에서 렌더 패스(`VkRenderPass`)는 하나 이상의 서브패스로 구성된다. 각 서브패스는 다음을 정의한다:
+`VkRenderPass` 내의 각 서브패스는 다음 역할을 명시한다:
 
-- 어떤 attachment를 **input**으로 읽을지
-- 어떤 attachment를 **color**로 쓸지
-- 어떤 attachment를 **depth/stencil**로 쓸지
-- **resolve** attachment (MSAA)
+- 입력(input)으로 읽을 어태치먼트
+- 색상(color)으로 출력할 어태치먼트
+- 깊이/스텐실(depth/stencil)로 사용할 어태치먼트
+- 다중 샘플링 해제(MSAA resolve) 대상 어태치먼트
 
 ```c
 VkSubpassDescription subpasses[2] = {};
 
-// 서브패스 0: gbuffer에 렌더링 (color 3개 출력)
+// 서브패스 0: G-Buffer 렌더링 (color 어태치먼트 3개 출력)
 subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 subpasses[0].colorAttachmentCount = 3;
 // pColorAttachments = { albedo, normal, roughness }
 
-// 서브패스 1: gbuffer를 input으로 읽어서 라이팅 적용
+// 서브패스 1: G-Buffer를 input attachment로 읽어 라이팅 연산 수행
 subpasses[1].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 subpasses[1].inputAttachmentCount = 3;
 // pInputAttachments = { albedo, normal, roughness }
@@ -42,44 +43,40 @@ subpasses[1].colorAttachmentCount = 1;
 // pColorAttachments = { finalColor }
 ```
 
-중요한 점: **같은 framebuffer attachment**를 서브패스 0에서는 color로 쓰고, 서브패스 1에서는 input attachment로 읽는다. GPU가 attachment 데이터를 VRAM에 쓰지 않고 **on-chip 메모리에서 바로 읽어갈 수 있다면** 엄청난 대역폭 절약이 된다.
+서브패스 0에서 색상으로 출력한 어태치먼트를 서브패스 1에서 입력 어태치먼트로 읽는다. TBDR GPU에서는 이 데이터가 VRAM으로 방출(flush)되지 않고 온칩 타일 메모리에 머무르므로 대역폭을 크게 절약한다.
 
 ---
 
-## 2. 실제 동작 흐름
+## 2. 동작 흐름
 
-서브패스는 하나의 렌더 패스 안에서 순차적으로 실행된다. 각 서브패스가 끝나면 자동으로 동기화가 처리된다.
+서브패스는 단일 렌더 패스 내에서 순차적으로 실행된다. 서브패스 간 전환 시점에는 정의된 의존성에 따라 실행 순서와 메모리 배리어가 적용된다.
 
 ```flowchart
 flowchart TD
-  A["렌더 패스 시작"]
-  B["서브패스 0: GBuffer Pass"]
-  C(["vkCmdBindPipeline(..., gbufferPipeline)"])
-  D(["vkCmdDraw(...) — albedo, normal, roughness에 씀"])
-  E["..."]
-  F["서브패스 종료 → 자동 attachment barrier"]
-  G["서브패스 1: Lighting Pass"]
-  H(["vkCmdBindPipeline(..., lightingPipeline)"])
-  I(["vkCmdBindDescriptorSets(...)"])
-  J(["vkCmdDraw(...) — gbuffer 결과를 input으로 읽고, finalColor에 씀"])
-  K["..."]
-  L["서브패스 종료"]
-  M["렌더 패스 종료"]
-  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M
+  A["렌더 패스 시작 (vkCmdBeginRenderPass)"]
+  B["서브패스 0: G-Buffer 기록"]
+  C["vkCmdBindPipeline / vkCmdDraw"]
+  D["서브패스 전환 (vkCmdNextSubpass)"]
+  E["서브패스 1: 라이팅 연산"]
+  F["vkCmdBindPipeline / vkCmdDraw (G-Buffer 입력 읽기)"]
+  G["렌더 패스 종료 (vkCmdEndRenderPass)"]
+  A --> B --> C --> D --> E --> F --> G
 ```
 
-서브패스 간 전환은 `vkCmdNextSubpass`로 이루어진다.
+서브패스 전환은 명령 버퍼에 `vkCmdNextSubpass`를 기록하여 수행한다.
 
 ```c
 vkCmdBeginRenderPass(cmdBuffer, &beginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 // 서브패스 0
+vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, gbufferPipeline);
 vkCmdDraw(cmdBuffer, ...);
 
 // 서브패스 1로 전환
 vkCmdNextSubpass(cmdBuffer, VK_SUBPASS_CONTENTS_INLINE);
 
 // 서브패스 1
+vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, lightingPipeline);
 vkCmdDraw(cmdBuffer, ...);
 
 vkCmdEndRenderPass(cmdBuffer);
@@ -87,136 +84,99 @@ vkCmdEndRenderPass(cmdBuffer);
 
 ---
 
-## 3. Subpass Dependency
+## 3. Subpass Dependency (서브패스 의존성)
 
-서브패스 사이의 의존성은 `VkSubpassDependency`로 정의한다. attachment의 layout 전환과 메모리 가시성을 서브패스 간에 자동으로 처리한다.
-
-> **용도** 서브패스 0에서 쓴 결과를 서브패스 1에서 읽으려면, GPU가 "쓰기가 완료됐다"는 걸 보장해야 한다. 이 의존성을 명시하지 않으면 GPU가 병렬로 실행하다가 잘못된 데이터를 읽을 수 있다.
+서브패스 간 실행 순서와 메모리 가시성, 이미지 레이아웃 자동 전환은 `VkSubpassDependency`로 정의한다. 이전 서브패스의 쓰기 작업이 완료되기 전에 다음 서브패스가 해당 어태치먼트를 읽지 못하도록 동기화 구간을 지정한다.
 
 ```c
-VkSubpassDependency dependencies[1] = {};
-
-// 서브패스 0(COLOR_OUTPUT) → 서브패스 1(INPUT_ATTACHMENT_READ)
-dependencies[0].srcSubpass = 0;
-dependencies[0].dstSubpass = 1;
-dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-dependencies[0].dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
-dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+VkSubpassDependency dependency{};
+dependency.srcSubpass = 0;
+dependency.dstSubpass = 1;
+dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+dependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+dependency.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+dependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 ```
 
-`VK_DEPENDENCY_BY_REGION_BIT`는 **framebuffer-local dependency**를 의미한다. 즉, 서브패스 0에서 실제로 렌더링된 영역(타일)에 대해서만 서브패스 1이 그 결과를 읽을 수 있음을 보장한다. 타일 기반 GPU에서 가장 효율적이다.
+`VK_DEPENDENCY_BY_REGION_BIT`는 프레임버퍼 로컬 의존성(framebuffer-local dependency)을 설정한다. 전체 프레임버퍼가 완료될 때까지 기다리지 않고, 동일 타일(픽셀 영역) 내에서 렌더링이 끝난 부분부터 다음 서브패스가 읽도록 제한하여 TBDR 아키텍처의 병렬성을 극대화한다.
 
-**💡 셀프 서브패스 의존성 (Self-dependency)**
+### 셀프 서브패스 의존성 (Self-dependency)
 
-`srcSubpass`와 `dstSubpass`를 **동일한 서브패스 인덱스**로 설정하는 경우를 말한다. 이는 주로 다음과 같은 상황에서 사용된다:
-- **동일 서브패스 내 읽기/쓰기 반복**: 같은 서브패스 안에서 특정 픽셀에 쓴 내용을 나중에 다시 읽어야 할 때(예: 복잡한 블렌딩이나 특정 연산의 피드백 루프) 필요하다.
-- **메모리 가시성 보장**: 동일한 서브패스 내에서도 GPU의 병렬 실행 특성상 쓰기 작업이 완료되기 전에 읽기 작업이 일어날 수 있다. 이때 셀프 의존성을 정의하면, 동일 서브패스 내의 작업 간에도 정확한 실행 순서와 메모리 가시성을 보장할 수 있다.
+`srcSubpass`와 `dstSubpass`를 동일한 서브패스 인덱스로 지정하는 방식이다.
 
-셀프 의존성을 설정할 때는 반드시 `VK_DEPENDENCY_BY_REGION_BIT` 플래그를 함께 사용하여, 픽셀 단위(타일 단위)의 의존성을 명시해야 GPU가 효율적으로 최적화할 수 있다.
+- **용도**: 셀프 의존성은 직접 동기화를 만들지 않는다. 대신 동일 서브패스 내에서 파이프라인 배리어를 사용할 수 있게 해주며, 배리어의 스코프가 서브패스 의존성의 스코프 부분집합이어야 한다.
+- **BY_REGION 조건**: 양쪽 스테이지 마스크에 framebuffer-space 스테이지가 포함되면 `VK_DEPENDENCY_BY_REGION_BIT`가 필수다(VUID-VkSubpassDependency-srcSubpass-02243). 다중 뷰 렌더 패스에서는 `VK_DEPENDENCY_VIEW_LOCAL_BIT`도 필요하다(VUID-VkSubpassDependency-srcSubpass-00872).
 
 ---
 
-## 4. 서브패스의 실제 활용 사례
+## 4. 서브패스 활용 사례
 
-### Deferred Shading (가장 전형적인 예)
-
-```
-Subpass 0: GBuffer   →   Subpass 1: Lighting
-(color: albedo, normal, roughness)      (input: albedo, normal, roughness)
-                                        (color: finalColor)
-```
-
-TBDR 디바이스에서는 GBuffer 데이터가 on-chip 메모리에 남아서, Lighting 패스가 VRAM을 거치지 않고 읽어간다.
-
-### Forward+ / Tiled Lighting
+### 지연 셰이딩 (Deferred Shading)
 
 ```
-Subpass 0: Depth Pre-pass
-Subpass 1: Forward rendering (depth test with early-Z)
+서브패스 0: G-Buffer 생성   →   서브패스 1: 라이팅 연산
+(출력: Albedo, Normal, Material)    (입력: Albedo, Normal, Material)
+                                    (출력: Final Color)
 ```
 
-### Post-processing
+TBDR GPU 환경에서 G-Buffer 텍스처를 VRAM에 쓰지 않고 온칩 타일 메모리에 유지한 채 라이팅 패스가 직접 소비한다.
+
+### 포워드 플러스 / 타일드 라이팅 (Forward+)
 
 ```
-Subpass 0: Scene render   →   Subpass 1: Bloom   →   Subpass 2: Tone mapping
-(color: HDR scene)              (input: HDR scene)       (input: bloom result)
-                                (color: bloom result)    (color: final LDR)
+서브패스 0: 깊이 프리패스 (Depth Pre-pass)
+서브패스 1: 얼리 Z(Early-Z) 테스트를 동반한 포워드 렌더링
+```
+
+### 후처리 체인 (Post-processing)
+
+```
+서브패스 0: 씬 렌더링   →   서브패스 1: 블룸   →   서브패스 2: 톤 매핑
+(출력: HDR Color)            (입력: HDR Color)         (입력: Bloom Result)
+                            (출력: Bloom Result)      (출력: Final LDR)
 ```
 
 ---
 
-## 5. Input Attachment (서브패스의 핵심)
+## 5. Input Attachment
 
-Input attachment는 **같은 framebuffer에 속한 다른 attachment의 픽셀을 셰이더에서 읽는** 특수한 descriptor 타입이다.
+Input Attachment는 동일 프레임버퍼에 바인딩된 다른 어태치먼트의 현재 픽셀 값을 셰이더에서 읽어오는 디스크립터 타입이다.
 
-> **일반 텍스처와 뭐가 다를까?** 일반 텍스처는 VRAM에서 읽고, 좌표로 원하는 위치를 지정한다. Input Attachment는 **현재 픽셀과 같은 위치의 데이터만** 읽는다._sampler가 필요 없는 이유다. `subpassLoad()`는 항상 "지금 이 픽셀"의 값을 반환한다.
+일반 텍스처 샘플링과 달리 임의 좌표 접근이나 텍스처 필터링(sampler)을 지원하지 않는다. 프래그먼트 셰이더가 현재 처리 중인 프래그먼트와 동일한 화면 좌표의 데이터만 로드하므로, TBDR 환경에서 온칩 메모리 레지스터 읽기로 직접 연결된다.
 
 ```glsl
-// 서브패스 1의 프래그먼트 셰이더
+// 서브패스 1 프래그먼트 셰이더
 layout(input_attachment_index = 0, set = 0, binding = 0) uniform subpassInput gbufferAlbedo;
 layout(input_attachment_index = 1, set = 0, binding = 1) uniform subpassInput gbufferNormal;
 layout(input_attachment_index = 2, set = 0, binding = 2) uniform subpassInput gbufferRoughness;
+
+layout(location = 0) out vec4 outColor;
 
 void main() {
     vec3 albedo = subpassLoad(gbufferAlbedo).rgb;
     vec3 normal = subpassLoad(gbufferNormal).rgb;
     float roughness = subpassLoad(gbufferRoughness).r;
-    // ... 라이팅 계산
+    
+    // 라이팅 계산 및 결과 출력
+    outColor = vec4(calculateLighting(albedo, normal, roughness), 1.0);
 }
 ```
 
-**차이점:**
-| 일반 텍스처 | Input Attachment |
-|-----------|----------------|
-| `sampler2D` + `texture()` | `subpassInput` + `subpassLoad()` |
-| 이미지 레이아웃: `SHADER_READ_ONLY_OPTIMAL` | 레이아웃: `INPUT_ATTACHMENT_OPTIMAL` |
-| LOD, sampler 사용 가능 | sampler 불필요 (같은 픽셀 위치) |
-| VRAM 대역폭 필요 | Tile 기반 GPU에서 on-chip 가능 |
-
-Input attachment는 **같은 픽셀 위치의 데이터만 읽으므로** sampler가 필요 없다. `subpassLoad()`는 항상 현재 픽셀의 값을 반환한다.
+| 구분 | 일반 텍스처 | Input Attachment |
+|---|---|---|
+| **셰이더 인터페이스** | `sampler2D` + `texture()` | `subpassInput` + `subpassLoad()` |
+| **이미지 레이아웃** | `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` | `VK_IMAGE_LAYOUT_INPUT_ATTACHMENT_OPTIMAL` |
+| **샘플러** | 필터링 및 밉맵 샘플러 필요 | 불필요 (현재 픽셀 위치 고정) |
+| **메모리 접근** | VRAM 대역폭 소비 | TBDR GPU에서 온칩 타일 메모리 유지 |
 
 ---
 
-## 6. VK_KHR_dynamic_rendering (Vulkan 1.3)
+## 6. VK_KHR_create_renderpass2 (Vulkan 1.2 Core)
 
-Vulkan 1.3에서 도입된 **Dynamic Rendering**은 렌더 패스 오브젝트를 미리 생성하지 않고, `vkCmdBeginRendering`으로 바로 렌더링을 시작할 수 있게 한다.
-
-> **언제 쓰면 좋을까?** 서브패스가 하나뿐인 단순한 렌더링이라면 Dynamic Rendering이 코드가 훨씬 간결하다. 하지만 서브패스 간 on-chip 최적화가 필요한 Deferred Shading 등은 기존 Render Pass가 더 효율적이다.
-
-**Dynamic Rendering vs 기존 서브패스 (요약):**
-
-| 항목 | 기존 Render Pass | Dynamic Rendering (Vulkan 1.3) |
-|------|-----------------|-------------------------------|
-| 사전 생성 | `vkCreateRenderPass` 필요 | 즉시 사용 가능 |
-| 서브패스 | 여러 서브패스 가능 | 단일 패스만 (서브패스 없음) |
-| 렌더 패스 호환성 | 파이프라인과 render pass 호환 필요 | 파이프라인과 VkFormat만 일치하면 됨 |
-| TBDR 최적화 | 서브패스 + input attachment로 최적화 | 일반 texture로 fallback |
-
-> **전체 설명은 `dynamic-rendering` 토픽 참고.** 거기서 포맷 계약, 레이아웃 전환, load/store op, MSAA resolve, secondary command buffer, suspend/resume까지 상세히 다룬다.
-
-> 실무적으로는 **성능이 중요한 TBDR 타겟**이라면 기존 Render Pass + subpass 방식을, **데스크탑/단순 파이프라인**이라면 Dynamic Rendering 방식을 선택하는 추세다.
-
----
-
-## 7. VK_KHR_create_renderpass2 (Vulkan 1.2)
-
-Vulkan 1.2에서는 `VkSubpassDescription2` / `VkSubpassDependency2`를 도입한 `VK_KHR_create_renderpass2`가 core로 승격되었다.
+Vulkan 1.2부터 코어로 승격된 `VK_KHR_create_renderpass2`는 확장 구조체를 수용할 수 있도록 `pNext` 체인을 지원하는 `VkSubpassDescription2`, `VkSubpassDependency2`, `VkAttachmentDescription2`를 제공한다.
 
 ```c
-// Vulkan 1.2 이후: VkSubpassDescription2 사용
-VkSubpassDescription2 subpass{};
-subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
-subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-subpass.viewMask = 0;       // multiview 지원: 렌더링을 브로드캐스트할 뷰 인덱스 비트마스크
-// ...
-```
-
-`VkAttachmentReference2`의 pNext 체인을 통해 VRS(fragment shading rate), multisample resolve 관련 확장 구조체를 연결할 수 있다. 사실상 `VkSubpassDescription`(Legacy)은 이제 하위 호환성 유지용이다.
-
-```c
-// Vulkan 1.2 이후: VkAttachmentDescription2 사용
 VkAttachmentDescription2 colorAttachment{};
 colorAttachment.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
 colorAttachment.format = VK_FORMAT_B8G8R8A8_SRGB;
@@ -226,86 +186,60 @@ colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
+VkAttachmentReference2 colorRef{};
+colorRef.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+colorRef.attachment = 0;
+colorRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
 VkSubpassDescription2 subpass{};
 subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
 subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+subpass.viewMask = 0; // 멀티뷰 지원 시 비트마스크 설정
 subpass.colorAttachmentCount = 1;
-subpass.pColorAttachments = &(VkAttachmentReference2){
-    .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,
-    .attachment = 0,
-    .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-};
+subpass.pColorAttachments = &colorRef;
 
-VkSubpassDependency2 dep{};
-dep.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-dep.dstSubpass = 0;
-dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-dep.srcAccessMask = 0;
-dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+VkSubpassDependency2 dependency{};
+dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+dependency.dstSubpass = 0;
+dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+dependency.srcAccessMask = 0;
+dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-VkRenderPassCreateInfo2 rpci{};
-rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
-rpci.attachmentCount = 1;
-rpci.pAttachments = &colorAttachment;
-rpci.subpassCount = 1;
-rpci.pSubpasses = &subpass;
-rpci.dependencyCount = 1;
-rpci.pDependencies = &dep;
+VkRenderPassCreateInfo2 renderPassCI{};
+renderPassCI.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+renderPassCI.attachmentCount = 1;
+renderPassCI.pAttachments = &colorAttachment;
+renderPassCI.subpassCount = 1;
+renderPassCI.pSubpasses = &subpass;
+renderPassCI.dependencyCount = 1;
+renderPassCI.pDependencies = &dependency;
 
 VkRenderPass renderPass;
-vkCreateRenderPass2(device, &rpci, nullptr, &renderPass);
+vkCreateRenderPass2(device, &renderPassCI, nullptr, &renderPass);
 ```
 
 ---
 
-## 8. 결론
+## 7. 설계 지침 및 최적화
 
-서브패스는 Vulkan 렌더링 파이프라인의 **CPU-GPU 간 동기화를 줄이고**, **tile 기반 GPU에서 대역폭을 절약**하기 위한 장치다.
+### TBDR 타일 메모리 최적화
 
-- **Deferred Shading**, **Post-processing chain**, **MSAA resolve** 등에서 진가를 발휘
-- 서브패스 의존성(subpass dependency)을 명시적으로 정의해야 함
-- TBDR 디바이스(mobile 등)에서는 거의 필수
-- 데스크탑에서는 Dynamic Rendering으로 대체하는 추세
-- Vulkan 1.4에서도 계속 발전 중 (`VkRenderingInputAttachmentIndexInfo`)
+1. **온칩 보존과 Transient 이미지**: 중간 G-Buffer처럼 다음 패스에서 읽고 버릴 이미지는 `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` 플래그와 `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` 메모리 타입을 지정한다. GPU가 VRAM 물리 메모리를 실제 할당하지 않고 온칩 타일 메모리만으로 처리할 수 있다.
+2. **`loadOp` / `storeOp` 명확화**: 불필요한 VRAM 읽기/쓰기를 피하기 위해 시작 시 `VK_ATTACHMENT_LOAD_OP_CLEAR` 또는 `DONT_CARE`를 사용하고, 프레임버퍼로 출력할 필요가 없는 임시 어태치먼트는 `VK_ATTACHMENT_STORE_OP_DONT_CARE`로 설정한다.
+3. **렌더 영역 정렬**: `vkGetRenderAreaGranularity`를 호출하여 얻은 크기의 배수로 `renderArea`를 설정하면 타일 경계 불일치로 인한 추가 로드/스토어 오버헤드를 방지한다.
 
----
+### Render Pass vs Dynamic Rendering 비교
 
-## 9. 렌더 패스 / 서브패스 설계
+Vulkan 1.3에 도입된 Dynamic Rendering(`vkCmdBeginRendering`)은 `VkRenderPass`와 `VkFramebuffer` 객체 생성을 생략하여 보일러플레이트를 줄인다. 대상 플랫폼과 파이프라인 요구사항에 따라 적합한 방식을 선택한다.
 
-**핵심**: 모바일·TBDR GPU는 타일 단위로 동작한다. 렌더 패스를 이에 맞게 설계하면 온칩 메모리를 최대한 활용할 수 있다.
+| 항목 | 기존 Render Pass | Dynamic Rendering (Vulkan 1.3+) |
+|---|---|---|
+| **객체 관리** | `VkRenderPass`, `VkFramebuffer` 필수 | 객체 생성 불필요 |
+| **파이프라인 호환성** | 동일한 렌더 패스 인터페이스 요구 | 어태치먼트 포맷 계약(`VkFormat`)만 일치 |
+| **서브패스 지원** | 다중 서브패스 및 온칩 의존성 제어 | 단일 렌더링 범위만 지원 (서브패스 없음) |
+| **온칩 로컬 읽기** | `subpassLoad()` 기본 지원 | Vulkan 1.4 `dynamic_rendering_local_read` 필요 |
+| **권장 대상** | 모바일/TBDR 대역폭 최적화(Deferred 등) | 데스크톱 GPU, 단순 패스, 동적 렌더 타겟 조합 |
 
-### Dynamic Rendering (Vulkan 1.3+)
-
-`VkRenderPass` 없이 `vkCmdBeginRendering`으로 렌더링한다. (상세는 `dynamic-rendering` 토픽 참고)
-
-- 렌더 패스 **호환성 규칙** 관리 불필요
-- **Framebuffer 객체** 생성 불필요
-- 단순한 시나리오에서 오버헤드 감소
-- 파이프라인 생성 시 attachment 포맷 정보는 여전히 맞춰야 함
-
-### 서브패스 활용
-
-하나의 렌더 패스 안에 여러 서브패스를 정의한다.
-
-- 서브패스 간 **의존성**으로 이미지 레이아웃 자동 전환
-- **Input Attachment**로 이전 서브패스 결과를 온칩에서 읽기
-- `VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS`로 병렬 커맨드 기록
-
-### 렌더 영역 정렬
-
-`vkGetRenderAreaGranularity`로 타일 경계에 맞춘 `renderArea`를 설정하면 TBDR 효율이 올라간다.
-
-```flowchart
-flowchart TD
-  A["G-Buffer Pass"]
-  B["Subpass 0: Depth + Normal — Input 없음"]
-  C["Subpass 1: Lighting — Input: G-Buffer (온칩)"]
-  D["Subpass 2: Post — Input: Lighting"]
-  A --> B
-  A --> C
-  A --> D
-```
-
----
+상세한 Dynamic Rendering 구현과 포맷 계약 규칙은 `dynamic-rendering` 토픽을 참조한다.

@@ -5,21 +5,24 @@ slug: command-buffers
 
 ## 소개
 
-`VkCommandBuffer`는 **GPU에 모든 명령을 기록하는 유일한 통로**다. Pool로 할당하고, begin/end로 recording 상태를 관리하고, reset하거나 re-record하는 패턴을 잘 알아야 GPU 작업이 깨지지 않는다.
+`VkCommandBuffer`는 GPU에 전달할 렌더링, 연산, 메모리 전송 명령을 기록하는 객체다. Vulkan의 커맨드 버퍼는 커맨드 풀(`VkCommandPool`)을 통해 할당하며, 상태 머신(Recording, Executable, Pending 등)에 따라 생명주기가 엄격히 제어된다.
 
-> **용어 정리**
-> - **Command Pool**: `VkCommandPool`. 버퍼들을 묶어주는 할당자. 큐 패밀리별로 하나씩.
-> - **Primary Command Buffer**: execute할 수 있는 버퍼. `vkQueueSubmit`에 직접 넘김.
-> - **Secondary Command Buffer**: primary에서 `vkCmdExecuteCommands`로 호출. inheritance가 필요.
-> - **Recording State**: `vkBeginCommandBuffer` → recording 중 → `vkEndCommandBuffer` → executable.
-> - **Pending State**: `vkQueueSubmit` 후 GPU가 아직 처리 중인 상태.
-> - **Reset**: 버퍼를 초기 상태로 되돌려 재사용. Pool 리셋으로 한 번에.
+효율적인 GPU 파이프라인 운용을 위해서는 스레드별 커맨드 풀 분리, 개별 버퍼 및 풀 재설정(Reset) 전략, 세컨더리 커맨드 버퍼 상속 규칙을 정확히 이해해야 한다.
 
-이 문서는 **Pool → 할당 → begin/end → submit → reset → free** 흐름과 자주 빠지는 주의사항을 다룬다.
+| 핵심 개념 | 설명 |
+|---|---|
+| **Command Pool** | 특정 큐 패밀리에 종속되어 커맨드 버퍼 메모리를 할당하고 관리하는 풀 객체 |
+| **Primary Buffer** | 큐에 직접 제출(`vkQueueSubmit`) 가능한 커맨드 버퍼 |
+| **Secondary Buffer** | 프라이머리 커맨드 버퍼 내에서 실행(`vkCmdExecuteCommands`)되는 보조 버퍼 |
+| **Pending 상태** | `vkQueueSubmit`으로 GPU에 제출되어 실행 중인 상태 (CPU에서 수정 및 해제 불가) |
+| **Recording 상태** | `vkBeginCommandBuffer` 호출 후 명령을 기록 중인 상태 |
+| **Reset** | 버퍼를 Initial 상태로 되돌려 재사용하는 것. Pool 리셋으로 일괄 처리 가능 |
 
 ---
 
-## 1. `VkCommandPool` — 커맨드 풀
+## 1. 커맨드 풀 (`VkCommandPool`)
+
+커맨드 풀은 특정 큐 패밀리에 바인딩되며, 해당 큐 패밀리에 속한 큐에만 버퍼를 제출할 수 있다.
 
 ```c
 typedef struct VkCommandPoolCreateInfo {
@@ -30,345 +33,209 @@ typedef struct VkCommandPoolCreateInfo {
 } VkCommandPoolCreateInfo;
 ```
 
-### 1.1. `flags`
+### 1.1. 생성 플래그 (`flags`)
 
-| 플래그 | 의미 |
-|--------|------|
-| `RESET_COMMAND_BUFFER_BIT` | 개별 버퍼를 `vkResetCommandBuffer`로 reset 가능. 없으면 pool 리셋만 가능. |
-| `TRANSIENT_BIT` | 짧은 수명의 버퍼용. 드라이버에 메모리 절약 힌트. |
-| `PROTECTED_BIT` | protected 커맨드 풀. protected 버퍼 전용. |
+| 플래그 | 설명 및 권장 사항 |
+|---|---|
+| `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT` | 개별 버퍼를 `vkResetCommandBuffer`로 재설정할 수 있다. 프레임마다 버퍼를 개별 재기록할 때 필수다. |
+| `VK_COMMAND_POOL_CREATE_TRANSIENT_BIT` | 수명이 짧은 커맨드 버퍼(단발성 복사나 즉시 제출용)를 할당할 것임을 드라이버에 알린다. 메모리 할당 최적화 힌트로 작용한다. |
+| `VK_COMMAND_POOL_CREATE_PROTECTED_BIT` | 보호된 메모리(Protected Memory)에 접근하는 커맨드 버퍼 전용 풀을 생성한다. |
 
-> **실전 권장** 무조건 `RESET_COMMAND_BUFFER_BIT`를 켠다. **이게 없으면** 개별 버퍼 reset이 불가능하고 pool 전체만 reset 가능 → 프레임단위 재사용이 귀찮아진다.
+> `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT`를 지정하지 않으면 `vkResetCommandBuffer` 호출 시 유효성 검증 오류가 발생하며, 풀 전체 재설정(`vkResetCommandPool`)으로만 초기화할 수 있다.
 
-### 1.2. `queueFamilyIndex`
+### 1.2. 큐 패밀리 바인딩 및 스레드 격리
 
-풀은 **특정 큐 패밀리**에 묶인다. 그래픽스/컴퓨트/트랜스퍼별 풀을 따로 만든다.
+커맨드 풀은 스레드에 안전하지 않다(Thread-unsafe). 멀티스레드 환경에서 병렬로 커맨드 버퍼를 기록하려면 각 스레드가 독립된 `VkCommandPool`을 보유해야 한다. 또한 그래픽스, 컴퓨트, 전송 등 큐 패밀리가 다르면 각각 별도의 풀을 생성해야 한다.
 
 ```c
-VkCommandPoolCreateInfo cpci{};
-cpci.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-cpci.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-cpci.queueFamilyIndex = graphicsQueueFamily; // vkGetPhysicalDeviceQueueFamilyProperties에서 찾은 graphics family
+VkCommandPoolCreateInfo poolCI{};
+poolCI.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+poolCI.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+poolCI.queueFamilyIndex = graphicsQueueFamilyIndex;
 
-VkCommandPool graphicsPool;
-vkCreateCommandPool(device, &cpci, nullptr, &graphicsPool);
+VkCommandPool graphicsCommandPool;
+vkCreateCommandPool(device, &poolCI, nullptr, &graphicsCommandPool);
 ```
-
-**큐 패밀리 개수만큼 풀**. 보통 graphics 1개, compute 1개, transfer 1개. 각각 자기 큐에만 제출 가능.
 
 ---
 
-## 2. `vkAllocateCommandBuffers` — 버퍼 할당
+## 2. 커맨드 버퍼 할당 및 해제
+
+커맨드 버퍼는 `vkAllocateCommandBuffers`로 풀에서 생성한다.
 
 ```c
 VkCommandBufferAllocateInfo allocInfo{};
-allocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-allocInfo.commandPool        = graphicsPool;
-allocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;  // 또는 SECONDARY
-allocInfo.commandBufferCount = 3;  // 예: 트리플 버퍼링용 3장
+allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+allocInfo.commandPool = graphicsCommandPool;
+allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; // 또는 VK_COMMAND_BUFFER_LEVEL_SECONDARY
+allocInfo.commandBufferCount = 2;
 
-VkCommandBuffer cmds[3];
-vkAllocateCommandBuffers(device, &allocInfo, cmds);
+VkCommandBuffer commandBuffers[2];
+vkAllocateCommandBuffers(device, &allocInfo, commandBuffers);
 ```
 
-- 한 풀에서 필요한 만큼 버퍼 한 번에 할당 가능.
-- 버퍼는 `vkFreeCommandBuffers`로 개별 해제하거나, pool 파괴 시 한 번에 정리.
+### 해제와 파괴
+
+- 개별 해제: `vkFreeCommandBuffers`를 호출한다. 단, 풀 전체를 파괴할 계획이라면 개별 해제 없이 풀 파괴 시 일괄 정리할 수 있다.
+- 풀 파괴: `vkDestroyCommandPool`을 호출하면 해당 풀에서 할당된 모든 커맨드 버퍼가 함께 소멸한다.
+- **제약**: 실행 중인(Pending 상태) 커맨드 버퍼가 포함되어 있으면 풀을 재설정하거나 파괴할 수 없다(VUID-vkResetCommandPool-commandPool-00040, VUID-vkDestroyCommandPool-commandPool-00041). 반드시 Fence를 대기하거나 `vkDeviceWaitIdle`을 거쳐야 한다.
 
 ---
 
-## 3. `vkBeginCommandBuffer` / `vkEndCommandBuffer`
+## 3. 커맨드 버퍼 수명 주기
+
+```
+[Initial] ──(vkBeginCommandBuffer)──> [Recording] ──(vkEndCommandBuffer)──> [Executable]
+   ↑                                                                                │
+   │                                                                        (vkQueueSubmit)
+   │                                                                                ↓
+   ├──── (vkResetCommandBuffer / vkResetCommandPool) ←── [Recording/Executable]  [Pending]
+   │                                                                    (GPU 완료 후 재사용 가능)
+```
+
+| 상태 | 설명 |
+|---|---|
+| **Initial** | 할당 직후 또는 재설정(Reset)된 상태. 기록을 시작할 수 있다. |
+| **Recording** | `vkBeginCommandBuffer` 호출 후 명령을 추가하는 상태. |
+| **Executable** | `vkEndCommandBuffer`를 마친 상태. 큐에 제출할 수 있다. |
+| **Pending** | `vkQueueSubmit` 후 GPU가 작업을 처리 중인 상태. 리소스를 덮어쓰거나 수정할 수 없다. |
+| **Invalid** | 실행 의존성을 지닌 세컨더리 버퍼가 재설정되는 등의 이유로 유효성을 잃은 상태. 재설정 후 재기록해야 한다. |
+
+---
+
+## 4. 기록 시작과 종료 (`vkBeginCommandBuffer`)
 
 ```c
 VkCommandBufferBeginInfo beginInfo{};
 beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;  // 또는 SIMULTANEOUS_USE_BIT
+beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-vkBeginCommandBuffer(cmd, &beginInfo);
-// ... 명령 기록 ...
-vkCmdDraw(...);
-vkEndCommandBuffer(cmd);
+vkBeginCommandBuffer(cmdBuffer, &beginInfo);
+// 명령 기록: 바인딩, 렌더링, 배리어, 디스패치 등...
+vkCmdDraw(cmdBuffer, ...);
+vkEndCommandBuffer(cmdBuffer);
 ```
 
-### 3.1. `flags`
+### `VkCommandBufferUsageFlagBits`
 
-| 플래그 | 의미 | 권장 |
-|--------|------|------|
-| `ONE_TIME_SUBMIT_BIT` | 한 번 submit → reset → 다시 record | 가장 일반적 |
-| `SIMULTANEOUS_USE_BIT` | submit 중에도 같은 버퍼로 다음 frame record 가능 | 멀티프레임 중복 submit 시 |
-| `RENDER_PASS_CONTINUE_BIT` | secondary가 렌더 패스 안에서 실행될 때만 | secondary 전용 |
-
-> **스펙 NOTE** "On some implementations, not using the `SIMULTANEOUS_USE_BIT` bit enables command buffers to be patched in-place if needed, rather than creating a copy of the command buffer."
->> **ONE_TIME_SUBMIT이 더 빠름** (드라이버가 in-place 패칭 가능). 보통 ONE_TIME_SUBMIT 권장.
-
-### 3.2. `vkResetCommandBuffer` — 개별 버퍼 재활용
-
-```c
-vkResetCommandBuffer(cmd, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);  // 또는 0
-// 이제 cmd는 초기 상태. vkBeginCommandBuffer 가능.
-```
-
-- `RESET_RELEASE_RESOURCES_BIT` 있으면 **메모리 자원을 풀로 반환**. 없으면 재사용을 위해 버퍼가 메모리를 보유. 보통 **0** (메모리 보유)이 더 빠름.
-- 이 기능 사용하려면 **pool 생성 시 `RESET_COMMAND_BUFFER_BIT`** 필수.
+| 플래그 | 설명 |
+|---|---|
+| `VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT` | 한 번 제출한 후 다시 기록하기 전까지 재제출하지 않는 버퍼. 드라이버가 커맨드 버퍼 메모리를 인플레이스(in-place)로 최적화할 수 있어 매 프레임 재기록에 권장된다. |
+| `VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT` | 이전 제출이 아직 실행 중(Pending)일 때도 동일 버퍼를 다시 제출하거나 다른 큐에 동시 제출할 수 있도록 허용한다. |
+| `VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT` | 세컨더리 커맨드 버퍼가 렌더 패스 실행 범위 내부에서 동작함을 명시한다. |
 
 ---
 
-## 4. `vkResetCommandPool` — 풀 전체 리셋
+## 5. 재설정 전략: 버퍼 리셋 vs 풀 리셋
+
+매 프레임 커맨드 버퍼를 다시 기록할 때 두 가지 재설정 방식을 사용할 수 있다.
+
+### 5.1. 개별 버퍼 재설정 (`vkResetCommandBuffer`)
+
+풀 생성 시 `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT` 플래그가 필요하다.
 
 ```c
-vkResetCommandPool(device, graphicsPool, 0);  // 또는 VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT
+// flags = 0: 할당된 내부 메모리를 유지하여 다음 기록 시 재할당 비용 절감
+// flags = VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT: 메모리를 풀로 반환
+vkResetCommandBuffer(cmdBuffer, 0);
 ```
 
-- 풀 안의 **모든 버퍼가 초기 상태**로 돌아감.
-- `RELEASE_RESOURCES_BIT` 있으면 메모리 해제.
-- **pending state 버퍼가 있으면 리셋 불가** (VUID-vkResetCommandPool-commandPool-00040). fence로 완료 확인 후 호출.
+- **장점**: 프레임 단위로 완료된 특정 버퍼만 선택적으로 초기화하고 재기록할 수 있다.
+- **권장 플래그**: 성능을 위해 `RELEASE_RESOURCES_BIT` 대신 `0`을 사용하여 내부 할당 메모리를 유지한다.
 
-> **스펙 원문** "Any primary command buffer allocated from another VkCommandPool that is in the recording or executable state and has a secondary command buffer allocated from commandPool recorded into it, becomes invalid."
->> 다른 풀의 primary가 이 풀의 secondary를 execute 중이었으면 그 primary도 invalid.
+### 5.2. 풀 전체 재설정 (`vkResetCommandPool`)
+
+풀에 속한 모든 커맨드 버퍼를 한 번에 Initial 상태로 되돌린다.
+
+```c
+vkResetCommandPool(device, commandPool, 0);
+```
+
+- **장점**: 수십~수백 개의 단기 보조 버퍼를 사용하는 작업에서 개별 리셋 호출 오버헤드를 줄인다.
+- **주의**: 풀 내에 GPU가 아직 실행 중인(Pending) 커맨드 버퍼가 하나라도 있으면 스펙 위반이다.
 
 ---
 
-## 5. `vkFreeCommandBuffers` / `vkDestroyCommandPool`
+## 6. 세컨더리 커맨드 버퍼 (Secondary Command Buffer)
+
+세컨더리 커맨드 버퍼는 드로우 콜 기록을 여러 CPU 코어에 분산할 때 핵심적인 역할을 한다.
+
+### 6.1. 상속 정보 (`VkCommandBufferInheritanceInfo`)
+
+세컨더리는 큐에 직접 제출할 수 없으며, 프라이머리 커맨드 버퍼가 시작한 렌더 패스 또는 렌더링 범위 상태를 상속받아야 한다.
 
 ```c
-vkFreeCommandBuffers(device, graphicsPool, 3, cmds);  // 3장 해제
-```
-
-- free 시점에 해당 버퍼가 **pending state면 안 됨**.
-- 다른 primary가 이 버퍼(secondary)를 execute 중이면 그 primary도 invalid.
-
-```c
-vkDestroyCommandPool(device, graphicsPool, nullptr);
-```
-
-- 풀 파괴 시 모든 버퍼가 자동으로 free.
-- **pending state 버퍼가 있으면 파괴 불가** (VUID-vkDestroyCommandPool-commandPool-00041).
-- `vkDeviceWaitIdle` → `vkDestroyCommandPool` 순서가 가장 안전.
-
----
-
-## 6. Primary / Secondary
-
-| | Primary | Secondary |
-|---|---------|-----------|
-| Execute | `vkQueueSubmit` 직접 | `vkCmdExecuteCommands`로 primary 안에서 |
-| Begin | `vkBeginCommandBuffer` | `vkBeginCommandBuffer` + `pInheritanceInfo` 필수 |
-| Inheritance | 불필요 | `VkCommandBufferInheritanceInfo`로 render pass/framebuffer 정보 |
-| 재사용 | `SIMULTANEOUS_USE` 또는 ONE_TIME 후 free | 동일 |
-
-**Secondary inheritance 구조:**
-
-```c
-VkCommandBufferInheritanceInfo inhInfo{};
-inhInfo.sType       = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-inhInfo.renderPass  = renderPass;    // 호환되는 render pass
-inhInfo.subpass     = 0;
-inhInfo.framebuffer = framebuffer;   // 또는 VK_NULL_HANDLE
-inhInfo.occlusionQueryEnable = VK_FALSE;  // secondary 안에서 occlusion query를 켤지
-inhInfo.queryFlags  = 0;
-inhInfo.pipelineStatistics = 0;
+VkCommandBufferInheritanceInfo inheritanceInfo{};
+inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+inheritanceInfo.renderPass = renderPass; // 호환되는 렌더 패스
+inheritanceInfo.subpass = 0;
+inheritanceInfo.framebuffer = framebuffer;
 
 VkCommandBufferBeginInfo beginInfo{};
-beginInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-beginInfo.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-                           | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
-beginInfo.pInheritanceInfo = &inhInfo;
+beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+                | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+beginInfo.pInheritanceInfo = &inheritanceInfo;
 
-vkBeginCommandBuffer(secondary, &beginInfo);
-// ... draw calls ...
-vkEndCommandBuffer(secondary);
+vkBeginCommandBuffer(secondaryCmd, &beginInfo);
+vkCmdDraw(secondaryCmd, ...);
+vkEndCommandBuffer(secondaryCmd);
 
-// primary에서 실행:
-vkCmdBeginRenderPass(primary, &rpBeginInfo, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
-vkCmdExecuteCommands(primary, 1, &secondary);
-vkCmdEndRenderPass(primary);
+// 프라이머리에서 실행
+vkCmdBeginRenderPass(primaryCmd, &rpBeginInfo, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+vkCmdExecuteCommands(primaryCmd, 1, &secondaryCmd);
+vkCmdEndRenderPass(primaryCmd);
 ```
 
-> **중첩 secondary**: `nestedCommandBuffer` feature 켜졌을 때 secondary 안에서 또 secondary 실행 가능. nesting depth 제한 있음 (`maxCommandBufferNestingLevel`).
+### 6.2. Dynamic Rendering 환경에서의 세컨더리 버퍼
 
-### 6.1. Dynamic Rendering + Secondary Command Buffer
-
-렌더 패스 객체 없이 `vkCmdBeginRendering`을 쓸 때 secondary command buffer는 **`VkCommandBufferInheritanceRenderingInfo`를 pNext에 연결**해야 한다.
+Dynamic Rendering(`vkCmdBeginRendering`)을 사용할 때는 `renderPass` 대신 `VkCommandBufferInheritanceRenderingInfo`를 상속 구조체의 `pNext`에 연결해야 한다.
 
 ```c
-// secondary command buffer begin
-VkCommandBufferInheritanceRenderingInfo inhRendering{};
-inhRendering.sType                = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
-inhRendering.colorAttachmentCount = 1;  // primary의 color attachment 수와 일치
-inhRendering.pColorAttachmentFormats = &(VkFormat){VK_FORMAT_R8G8B8A8_SRGB};
-inhRendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-inhRendering.rasterizationSamples  = VK_SAMPLE_COUNT_1_BIT;
+VkCommandBufferInheritanceRenderingInfo inheritanceRendering{};
+inheritanceRendering.sType =
+    VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO;
+inheritanceRendering.colorAttachmentCount = 1;
+inheritanceRendering.pColorAttachmentFormats = &colorFormat;
+inheritanceRendering.depthAttachmentFormat = depthFormat;
+inheritanceRendering.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
-VkCommandBufferInheritanceInfo inhInfo{};
-inhInfo.sType       = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
-inhInfo.pNext       = &inhRendering;  // ← dynamic rendering용 pNext
-// renderPass, framebuffer, subpass는 VK_NULL_HANDLE/0
+VkCommandBufferInheritanceInfo inheritanceInfo{};
+inheritanceInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+inheritanceInfo.pNext = &inheritanceRendering;
 
 VkCommandBufferBeginInfo beginInfo{};
-beginInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-beginInfo.flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-beginInfo.pInheritanceInfo = &inhInfo;
-vkBeginCommandBuffer(secondary, &beginInfo);
-// ... draw calls ...
-vkEndCommandBuffer(secondary);
+beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+beginInfo.pInheritanceInfo = &inheritanceInfo;
 
-// primary
-vkCmdBeginRendering(primary, &(VkRenderingInfo){
-    .flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT,
-    .renderArea = {{0,0},{W,H}},
-    .layerCount = 1,
-    .colorAttachmentCount = 1,
-    .pColorAttachments = &colorAttach,
-    .pDepthAttachment   = &depthAttach,
-});
-vkCmdExecuteCommands(primary, 1, &secondary);
-vkCmdEndRendering(primary);
+vkBeginCommandBuffer(secondaryCmd, &beginInfo);
+vkCmdDraw(secondaryCmd, ...);
+vkEndCommandBuffer(secondaryCmd);
+
+// 프라이머리에서 실행
+vkCmdBeginRendering(primaryCmd, &renderingInfo); // flags에 VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT 필수
+vkCmdExecuteCommands(primaryCmd, 1, &secondaryCmd);
+vkCmdEndRendering(primaryCmd);
 ```
 
 > **스펙 원문 (VUID-vkCmdExecuteCommands-flags-06026)** `flags` member of `VkCommandBufferInheritanceRenderingInfo` must be equal to the `VkRenderingInfo::flags` parameter to `vkCmdBeginRendering`, excluding `VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT`.
 > **VUID-vkCmdExecuteCommands-colorAttachmentCount-06027** `colorAttachmentCount` must be equal to `vkCmdBeginRendering`'s `colorAttachmentCount`.
->> primary와 secondary의 포맷/개수 불일치가 가장 흔한 VUID 실수.
+>
+> primary와 secondary의 포맷/개수 불일치가 가장 흔한 VUID 실수다.
 
 ---
 
-## 7. Command Buffer 수명 주기
+## 7. 주요 주의사항
 
-```
-  Initial → Recording → Executable → Pending → Invalid
-    ↑          ↓           ↓            ↓
-    └─── Reset ──────────────┘            │
-                                          │
-    DestroyPool ←──────────────────────────┘ (pending 제외)
-```
+### 커맨드 풀 관리
 
-| 상태 | 설명 |
-|------|------|
-| **Initial** | `vkAllocateCommandBuffers` 직후, `vkResetCommandBuffer`/`vkResetCommandPool` 후 |
-| **Recording** | `vkBeginCommandBuffer` → `vkEndCommandBuffer` 사이. 명령 기록 가능. |
-| **Executable** | `vkEndCommandBuffer` 직후. `vkQueueSubmit` 가능. |
-| **Pending** | `vkQueueSubmit` 후 GPU 처리 중. fence가 signal 될 때까지 이 상태. |
-| **Invalid** | 다른 primary에서 execute된 secondary가 pool 리셋되면 그 primary가 invalid. |
+- **큐 패밀리 불일치**: 풀 생성 시 지정한 `queueFamilyIndex`와 다른 큐 패밀리에 커맨드 버퍼를 제출하면 오류가 발생한다.
+- **멀티스레드 동시 접근**: 커맨드 풀은 동기화되지 않으므로 서로 다른 스레드가 동일한 풀에서 동시에 버퍼를 할당, 해제, 재설정할 수 없다. 스레드당 전용 풀을 할당해야 한다.
+- **빈번한 풀 생성/파괴 지양**: 커맨드 풀은 초기화 시점에 생성하고 애플리케이션 수명 주기 동안 재사용하며, 메모리 압박이 심할 때만 `vkTrimCommandPool`을 호출하여 여유 메모리를 OS에 반환한다.
 
----
+### 커맨드 버퍼 상태 및 동기화
 
-## 8. 전형적 패턴
-
-### 8.1. 매 프레임 재기록 (ONE_TIME_SUBMIT)
-
-```c
-// 프레임 시작 시 reset
-vkResetCommandBuffer(cmd, 0);
-vkBeginCommandBuffer(cmd, &beginInfo);  // ONE_TIME_SUBMIT
-// ... 기록 ...
-vkEndCommandBuffer(cmd);
-
-// submit
-vkQueueSubmit(queue, 1, &submit, frameFence);
-
-// fence wait 후 다음 프레임에 다시 reset → begin → ... → end → submit
-```
-
-### 8.2. 한 번 기록 후 반복 (SIMULTANEOUS_USE)
-
-```c
-// 초기화 1회
-vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
-    .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
-});
-// ... 영구적인 명령 (예: 풀스크린 quad, post-process) ...
-vkEndCommandBuffer(cmd);
-
-// 매 프레임 submit만 반복
-vkQueueSubmit(queue, 1, &submit, fence);
-// cmd는 reset/re-record 안 함
-```
-
-### 8.3. Pool 별 용도 분리 + Reset
-
-```c
-// graphics pool: frame commands
-VkCommandBufferAllocateInfo fci{};
-fci.commandPool = graphicsPool;
-fci.level       = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-fci.commandBufferCount = 3;  // triple buffer
-vkAllocateCommandBuffers(device, &fci, frameCmds);
-
-// staging pool: upload commands
-fci.commandPool = stagingPool;
-fci.commandBufferCount = 1;
-vkAllocateCommandBuffers(device, &fci, &uploadCmd);
-
-// 매 프레임
-vkResetCommandPool(device, stagingPool, 0);  // upload cmd 초기화
-vkBeginCommandBuffer(uploadCmd, &beginInfo); // ONE_TIME_SUBMIT
-// ... copy ...
-vkEndCommandBuffer(uploadCmd);
-vkQueueSubmit(transferQueue, 1, &uploadSubmit, uploadFence);
-```
-
----
-
-## 9. 자주 빠지는 주의사항 모음
-
-### 9.1. Pool
-
-- [ ] `queueFamilyIndex`가 **버퍼를 submit할 큐와 일치하지 않음** → `vkQueueSubmit`에서 VUID 오류.
-- [ ] `RESET_COMMAND_BUFFER_BIT` 없이 개별 버퍼 reset 시도 → 기능 미지원.
-- [ ] `TRANSIENT_BIT`를 켜고 버퍼를 **반복 재사용** → VUID는 아니지만 성능 저하 가능 (짧은 수명 힌트 위반).
-- [ ] `vkResetCommandPool`/`vkDestroyCommandPool` 시 **pending 버퍼** 존재 (VUID-commandPool-00040/00041).
-- [ ] graphics/transfer/compute 용 pool을 하나로 통합 → 각기 다른 `queueFamilyIndex` 불일치.
-
-### 9.2. Begin/End
-
-- [ ] `ONE_TIME_SUBMIT_BIT`로 기록한 버퍼를 **다시 submit** → `vkBeginCommandBuffer` 없이 submit 시도.
-- [ ] `SIMULTANEOUS_USE_BIT` 없이 submit 중에 같은 버퍼를 다시 begin → UB.
-- [ ] Secondary begin 시 `pInheritanceInfo` 누락.
-- [ ] Dynamic rendering에서 secondary 사용 시 `VkCommandBufferInheritanceRenderingInfo` pNext 누락.
-- [ ] **render pass 밖에서** `RENDER_PASS_CONTINUE_BIT`로 begin한 secondary를 execute → VUID.
-
-### 9.3. Execute (secondary)
-
-- [ ] primary의 render pass와 secondary의 `subpass`가 불일치.
-- [ ] `VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS` 없이 `vkCmdExecuteCommands` → VUID.
-- [ ] 같은 primary에 두 번 이상 execute (해당 secondary가 `SIMULTANEOUS_USE` 아니면 UB).
-- [ ] secondary 안에서 occlusion query를 begin/end하려는데 `occlusionQueryEnable = VK_FALSE` → VUID.
-- [ ] `nestedCommandBuffer` feature 없이 secondary 안에서 `vkCmdExecuteCommands` → VUID.
-
-### 9.4. Reset
-
-- [ ] `vkResetCommandBuffer` 시 **해당 버퍼를 execute 중인 다른 primary**가 존재 → 그 primary가 invalid.
-- [ ] `RELEASE_RESOURCES_BIT`를 **매 프레임** 사용 → 매번 메모리 재할당으로 느림.
-- [ ] `vkResetCommandPool` 호출 시점에 다른 primary가 이 풀의 secondary를 execute 중 → primary가 invalid.
-- [ ] 모바일/타일 GPU에서는 reset 성능 특성이 다를 수 있음 — **가능한 한 Record+Submit+Reset 패턴**으로.
-
-### 9.5. 일반 / 실전
-
-- [ ] `vkFreeCommandBuffers` 없이 pool만 파괴 → 내부 버퍼 정리되지만 명시적 free가 더 의도 명확.
-- [ ] `End` 없이 `vkResetCommandBuffer` 호출 → recording 상태 버퍼의 초기화. 명시적 end 권장.
-- [ ] `SIMULTANEOUS_USE_BIT`로 기록한 버퍼를 **두 큐에 동시 submit** → UB. 한 큐에 중복 submit은 허용, 서로 다른 큐는 불가.
-- [ ] 같은 command buffer를 `vkQueueSubmit` 직후 **pool 리셋** → 아직 pending 상태 → VUID. **fence로 확실하게**.
-- [ ] **멀티스레드**에서 같은 pool의 버퍼를 동시에 record → 외부 동기화 필요. 보통 스레드별로 별도 pool.
-- [ ] pool 생성/파괴를 **매 프레임** → 풀 생성 비용 큼. 재사용 권장.
-- [ ] `vkTrimCommandPool`로 사용하지 않는 메모리 반환 가능 (memory pressure 상황).
-
----
-
-## 10. 빠른 참조
-
-| 의도 | 권장 |
-|------|------|
-| 일반 frame draw | `ONE_TIME_SUBMIT` + 매 frame reset + re-record |
-| 풀스크린 post-process | `SIMULTANEOUS_USE`로 한 번만 record |
-| 멀티스레드 | 스레드별 pool |
-| GUI / UI commands | 별도 transfer pool |
-| 스테이징 업로드 | ONE_TIME_SUBMIT transfer pool |
-| 메모리 압박 | `vkTrimCommandPool` |
-| GPU idle 보장 | `vkDeviceWaitIdle` 후 pool 리셋/파괴 |
-
-| 상태 전이 | API |
-|-----------|-----|
-| Initial → Recording | `vkBeginCommandBuffer` |
-| Recording → Executable | `vkEndCommandBuffer` |
-| Executable → Pending | `vkQueueSubmit` |
-| Pending → Executable | fence signal |
-| Any(except Pending) → Initial | `vkResetCommandBuffer` 또는 `vkResetCommandPool` |
-| Any(except Pending) → 삭제 | `vkFreeCommandBuffers` 또는 `vkDestroyCommandPool` |
+- **Pending 상태 침범 금지**: `vkQueueSubmit`으로 제출한 커맨드 버퍼는 연결된 Fence가 신호될 때까지 Pending 상태다. 완료 확인 없이 `vkResetCommandBuffer`, `vkBeginCommandBuffer`, `vkFreeCommandBuffers`를 호출해서는 안 된다.
+- **`ONE_TIME_SUBMIT_BIT` 버퍼 재제출 금지**: 해당 플래그로 기록된 버퍼는 한 번 제출된 후 다시 기록하기 전까지 유효하지 않다.
+- **세컨더리 상속 검증**: Dynamic Rendering 환경에서 세컨더리 버퍼의 상속 포맷이나 샘플 수가 프라이머리 렌더링 범위와 일치하지 않으면 검증 레이어 오류가 발생한다.

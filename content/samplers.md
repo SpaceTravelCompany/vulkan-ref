@@ -5,22 +5,22 @@ slug: samplers
 
 ## 소개
 
-`VkSampler`는 **셰이더가 이미지를 어떻게 샘플링할지** 결정하는 immutable 객체다. 필터, address mode, LOD, anisotropy, PCF 비교 등 **한번 만들면 바꿀 수 없는 설정**을 묶어서 디스크립터에 함께 묶거나 따로 바인딩한다.
+`VkSampler`는 셰이더가 이미지를 읽고 보간하는 방식을 정의하는 불변(Immutable) 객체다. 필터 모드, 어드레스 모드, LOD 범위, 비등방성(Anisotropy) 필터링, PCF 깊이 비교 등 렌더링 품질을 결정하는 파라미터를 캡슐화한다. 디스크립터 세트에 결합 샘플러(Combined Image Sampler) 형태로 묶거나 분리된 샘플러로 바인딩하여 사용한다.
 
 > **용어 정리**
-> - **Filter**: 멀티플 샘플(linear) vs 단일 샘플(nearest).
-> - **Address Mode**: uv 좌표가 [0,1] 밖일 때 동작 (repeat, clamp, mirror, ...).
-> - **Mipmap Mode**: mip 간 보간 (linear/nearest).
-> - **LOD Bias**: 계산된 LOD에 더하는 bias. 부적절하면 aliasing/blur.
-> - **Anisotropy**: 비등방 샘플링. 비스듬한 표면에서 품질 향상.
-> - **PCF (Percentage-Closer Filtering)**: 깊이 비교 샘플의 보간. 그림자 가장자리 부드럽게.
-> - **Unnormalized Coordinates**: [0,1] 대신 픽셀 단위 좌표 (2D 텍셀 인덱스).
+> - **Filter**: 단일 텍셀 선택(`NEAREST`) 또는 인접 텍셀 선형 보간(`LINEAR`).
+> - **Address Mode**: UV 좌표가 [0, 1] 범위를 벗어날 때의 처리 방식(`REPEAT`, `CLAMP_TO_EDGE` 등).
+> - **Mipmap Mode**: 밉맵 레벨 사이의 보간 방식(`NEAREST`는 양선형, `LINEAR`는 삼선형).
+> - **LOD Bias**: 하드웨어가 계산한 LOD 값에 더해지는 가중치. 음수는 선명해지지만 앨리어싱이 생기고 양수는 흐려짐.
+> - **Anisotropy**: 비등방성 필터링. 비스듬한 각도에서 바라보는 표면의 텍스처 흐림을 방지.
+> - **PCF (Percentage-Closer Filtering)**: 섀도 맵 깊이 비교 결과를 보간하여 그림자 경계면을 부드럽게 표현하는 기법.
+> - **Unnormalized Coordinates**: [0, 1] 정규화 범위 대신 픽셀 텍셀 단위 정수 좌표([0, width), [0, height))를 직접 사용하는 모드.
 
-이 문서는 `VkSamplerCreateInfo`의 모든 필드와 자주 빠지는 주의사항을 다룬다.
+이 문서는 `VkSamplerCreateInfo`의 주요 설정과 구현 시 주의사항을 정리한다.
 
 ---
 
-## 1. `VkSamplerCreateInfo` — 큰 구조
+## 1. `VkSamplerCreateInfo` 구조
 
 ```c
 typedef struct VkSamplerCreateInfo {
@@ -45,201 +45,169 @@ typedef struct VkSamplerCreateInfo {
 } VkSamplerCreateInfo;
 ```
 
-> **스펙 원문 (Note)** "Some implementations will default to shader state if this member does not match." (compareEnable 주석)
->> 일부 구현은 셰이더 상태(예: `OpTypeSampledImage`의 depth-compare 속성)와 sampler의 `compareEnable`이 다르면 셰이더 쪽을 따르기도 한다. 포터블하게 쓰려면 일치시켜야 함.
+> **스펙 참고** 일부 하드웨어 구현은 셰이더의 SPIR-V 선언(예: `OpTypeSampledImage`의 깊이 비교 속성)과 샘플러의 `compareEnable` 설정이 다를 때 셰이더 상태를 우선하기도 한다. 이식성을 확보하려면 셰이더 선언과 샘플러 설정을 반드시 일치시켜야 한다.
 
 ---
 
-## 2. 필터 — `magFilter` / `minFilter` / `mipmapMode`
+## 2. 필터 모드 — `magFilter` / `minFilter` / `mipmapMode`
 
-| 필드 | 의미 | 일반 값 |
-|------|------|---------|
-| `magFilter` | 확대 시 (texel < pixel) | `NEAREST` (픽셀아트) / `LINEAR` (부드럽게) |
-| `minFilter` | 축소 시 (texel > pixel) | `LINEAR` 권장 |
-| `mipmapMode` | mip 간 보간 | `NEAREST` (성능) / `LINEAR` (품질) |
+| 필드 | 동작 시점 | 일반적 설정 |
+|------|----------|------------|
+| `magFilter` | 텍셀이 픽셀보다 클 때 (확대) | `NEAREST`(픽셀 아트) 또는 `LINEAR`(부드러운 표면) |
+| `minFilter` | 텍셀이 픽셀보다 작을 때 (축소) | `LINEAR` 권장 |
+| `mipmapMode` | 밉 레벨 간 보간 | `NEAREST`(양선형, 성능 우선) 또는 `LINEAR`(삼선형, 품질 우선) |
 
-> **스펙 원문 (VkFilter 정의)** `VK_FILTER_NEAREST`, `VK_FILTER_LINEAR`, `VK_FILTER_CUBIC_EXT`(`VK_IMG_filter_cubic` alias). 큐빅은 `VK_EXT_filter_cubic`이 활성화된 디바이스에서만. 큐빅 사용 시 `anisotropyEnable = VK_FALSE` 강제 (VUID-VkSamplerCreateInfo-magFilter-01081).
+> **스펙 발췌 (VkFilter 정의)** `VK_FILTER_CUBIC_EXT`는 `VK_EXT_filter_cubic` 확장을 활성화한 디바이스에서만 지원된다. 큐빅 필터를 사용할 때는 `anisotropyEnable`을 반드시 `VK_FALSE`로 설정해야 한다(VUID-VkSamplerCreateInfo-magFilter-01081).
 
-**권장 조합:**
+**자주 쓰이는 필터 조합:**
 
-| 용도 | mag | min | mipmap | 비고 |
-|------|-----|-----|--------|------|
-| 3D 씬 일반 | LINEAR | LINEAR | LINEAR | 트릴리니어 |
-| 픽셀아트 2D | NEAREST | NEAREST | NEAREST | 격자 유지 |
-| 그림자 맵 (PCF) | LINEAR | LINEAR | NEAREST | 안티에일리어싱 |
-| 성능 최우선 | LINEAR | NEAREST | NEAREST | 빌리니어 |
-
----
-
-## 3. Address Mode — `addressModeU/V/W`
-
-uv 좌표가 [0, 1] 밖일 때 동작. UV는 이미지 평면 축마다 적용 (W는 3D 텍스처).
-
-| 모드 | 동작 | 흔한 용도 |
-|------|------|----------|
-| `REPEAT` | uv mod 1 (타일링) | 벽 바닥 텍스처 |
-| `MIRRORED_REPEAT` | 매번 미러링하며 반복 | 대칭 패턴 |
-| `CLAMP_TO_EDGE` | 가장자리 픽셀로 클램프 | UI, 데칼 |
-| `CLAMP_TO_BORDER` | `borderColor`로 채움 | 글로우/halo, 큐브 단일 면 |
-| `MIRROR_CLAMP_TO_EDGE` | 미러 1회 후 엣지 클램프 | 반사 텍스처 (1.2+) |
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-addressModeU-01079)** If the `samplerMirrorClampToEdge` feature is not enabled, and if the `VK_KHR_sampler_mirror_clamp_to_edge` extension is not enabled, `addressModeU/V/W` must not be `MIRROR_CLAMP_TO_EDGE`.
->> `MIRROR_CLAMP_TO_EDGE`는 **Vulkan 1.2 또는 extension** 필요. 1.0/1.1 디바이스에서는 못 씀.
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-addressModeU-01078)** If any of `addressModeU/V/W` are `CLAMP_TO_BORDER`, `borderColor` must be a valid `VkBorderColor` value.
->> border를 쓸 거면 `borderColor` 명시 필수.
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-addressModeU-01646)** If sampler Y′CBCR conversion is enabled, `addressModeU/V/W` must be `CLAMP_TO_EDGE`, `anisotropyEnable` must be `VK_FALSE`, and `unnormalizedCoordinates` must be `VK_FALSE`.
->> YCbCr 변환에는 address가 CLAMP_TO_EDGE만, anisotropy/비정규화 금지.
-
-**Border 색 (`VkBorderColor`):**
-
-| 값 | 의미 |
-|----|------|
-| `FLOAT_TRANSPARENT_BLACK` | (0,0,0,0) — 가장 일반적 |
-| `INT_TRANSPARENT_BLACK` | (0,0,0,0) 정수형 |
-| `FLOAT_OPAQUE_BLACK` / `FLOAT_OPAQUE_WHITE` | 디버깅용 |
-| `FLOAT_CUSTOM_EXT` / `INT_CUSTOM_EXT` | 임의 색 (customBorderColors feature) |
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-borderColor-04011)** If `borderColor` is `FLOAT_CUSTOM_EXT` or `INT_CUSTOM_EXT`, then a `VkSamplerCustomBorderColorCreateInfoEXT` must be included in the pNext chain.
->> 커스텀은 별도 pNext 구조로 색 전달.
+| 렌더링 목적 | magFilter | minFilter | mipmapMode | 최종 효과 |
+|------------|-----------|-----------|------------|----------|
+| 3D 일반 메쉬 | `LINEAR` | `LINEAR` | `LINEAR` | 삼선형(Trilinear) 필터링 |
+| 2D 픽셀 아트 | `NEAREST` | `NEAREST` | `NEAREST` | 픽셀 경계 격자 유지 |
+| 섀도 맵 (PCF) | `LINEAR` | `LINEAR` | `NEAREST` | 깊이 경계선 부드러운 안티앨리어싱 |
+| 저사양 최적화 | `LINEAR` | `NEAREST` | `NEAREST` | 확대 시 선형, 축소/밉 시_NEAREST (삼선형보다 저렴) |
 
 ---
 
-## 4. Mipmap / LOD — `mipmapMode`, `mipLodBias`, `minLod`, `maxLod`
+## 3. 어드레스 모드 — `addressModeU / V / W`
+
+UV 좌표가 [0, 1] 범위를 벗어날 때의 래핑 동작을 축별로 제어한다. W축은 3D 볼륨 텍스처에 적용된다.
+
+| 모드 | 동작 원리 | 주요 활용처 |
+|------|----------|------------|
+| `REPEAT` | 좌표를 1로 나눈 나머지(`uv mod 1`) 사용 | 타일형 벽면 바닥재 텍스처 |
+| `MIRRORED_REPEAT` | 정수 경계마다 이미지를 뒤집으며 반복 | 대칭 무늬 텍스처 |
+| `CLAMP_TO_EDGE` | 가장자리 픽셀 색상으로 고정 | UI 요소, 스프라이트, 데칼 |
+| `CLAMP_TO_BORDER` | 정의된 `borderColor` 색상으로 채움 | 섀도 맵 투영 영역 외부, 글로우 효과 |
+| `MIRROR_CLAMP_TO_EDGE` | 1회 반전 후 경계면 고정 | 환경 반사 텍스처 (1.2 코어) |
+
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-addressModeU-01079)** `samplerMirrorClampToEdge` 기능이나 `VK_KHR_sampler_mirror_clamp_to_edge` 확장이 활성화되지 않았다면 `MIRROR_CLAMP_TO_EDGE`를 사용할 수 없다.
+
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-addressModeU-01078)** 어드레스 모드로 `CLAMP_TO_BORDER`를 지정하는 경우 유효한 `borderColor` 열거형을 반드시 전달해야 한다.
+
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-addressModeU-01646)** YCbCr 색 변환 샘플러를 활성화할 때는 어드레스 모드가 `CLAMP_TO_EDGE`여야 하며 `anisotropyEnable`과 `unnormalizedCoordinates`는 모두 `VK_FALSE`여야 한다.
+
+**경계 색상 (`VkBorderColor`):**
+
+| 열거형 값 | 색상 값 | 용도 |
+|-----------|---------|------|
+| `FLOAT_TRANSPARENT_BLACK` | `(0, 0, 0, 0)` 부동소수점 | 가장 널리 쓰이는 기본값 |
+| `INT_TRANSPARENT_BLACK` | `(0, 0, 0, 0)` 정수형 | 정수형 포맷 이미지 전용 |
+| `FLOAT_OPAQUE_BLACK` / `WHITE` | 불투명 검정 / 흰색 | 섀도 맵 경계 클램핑 |
+| `FLOAT_CUSTOM_EXT` / `INT_CUSTOM_EXT` | 임의 지정 색상 | `customBorderColors` 기능 활성화 시 |
+
+---
+
+## 4. 밉맵 및 LOD 제어
 
 ```c
-samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;  // 트릴리니어
+samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;  // 삼선형 필터링
 samplerInfo.mipLodBias  = 0.0f;
 samplerInfo.minLod      = 0.0f;
-samplerInfo.maxLod      = VK_LOD_CLAMP_NONE;  // 클램프 없음
+samplerInfo.maxLod      = VK_LOD_CLAMP_NONE;             // 상한 클램핑 해제
 ```
 
-| 필드 | 의미 | 비고 |
-|------|------|------|
-| `mipmapMode` | mip 간 보간 | 트릴리너 = `LINEAR` |
-| `mipLodBias` | LOD 계산에 더할 bias | 부적절하면 blur(-) 또는 aliasing(+) |
-| `minLod` | LOD 최소 (clamp) | sharpest mip보다 큰 값이면 sharpest 사용 |
-| `maxLod` | LOD 최대 (clamp) | `VK_LOD_CLAMP_NONE` (= 1000.0f) → 클램프 없음 |
+| 필드 | 설명 | 주의사항 |
+|------|------|----------|
+| `mipmapMode` | 밉 레벨 사이의 보간 모드 | 밉맵이 없는 단일 이미지에는 `NEAREST` 지정 권장 |
+| `mipLodBias` | 계산된 LOD에 가산할 오프셋 | `-maxSamplerLodBias` ~ `+maxSamplerLodBias` 범위 (VUID-VkSamplerCreateInfo-mipLodBias-01069) |
+| `minLod` | LOD 최솟값 (가장 선명한 밉 제한) | 원본 밉보다 큰 값을 주면 원본 밉 사용 제한 |
+| `maxLod` | LOD 최댓값 (가장 흐린 밉 제한) | `VK_LOD_CLAMP_NONE`(1000.0f) 설정 시 제한 없음 |
 
-> **스펙 원문 (VUID-VkSamplerCreateInfo-mipLodBias-01069)** The absolute value of `mipLodBias` must be less than or equal to `VkPhysicalDeviceLimits::maxSamplerLodBias`.
->> device 한계를 넘어서면 안 됨 (보통 0~16 사이).
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-maxLod-01973)** `maxLod`는 항상 `minLod` 이상이어야 한다.
 
-> **스펙 원문 (VUID-VkSamplerCreateInfo-maxLod-01973)** `maxLod` must be greater than or equal to `minLod`.
->> `maxLod < minLod`은 무효. 보통 `minLod=0`, `maxLod=VK_LOD_CLAMP_NONE`.
-
-**권장:**
-
-- 텍스처 mipmap이 잘 만들어진 경우 → `LINEAR` + `minLod=0` + `maxLod=VK_LOD_CLAMP_NONE` + `mipLodBias=0`
-- LOD blur를 일부러 강하게 하고 싶을 때 → `mipLodBias` 양수
-- 그림자맵처럼 좁은 LOD 범위만 쓰고 싶을 때 → `minLod=2`, `maxLod=4`
+**권장 설정 지침:**
+- 완전한 밉체인을 가진 3D 텍스처: `LINEAR` + `minLod = 0.0f` + `maxLod = VK_LOD_CLAMP_NONE` + `mipLodBias = 0.0f`.
+- 밉맵이 없는 단일 레벨 UI 텍스처: `mipmapMode = NEAREST` + `minLod = 0.0f` + `maxLod = 0.0f`.
 
 ---
 
-## 5. Anisotropy — `anisotropyEnable`, `maxAnisotropy**
+## 5. 비등방성 필터링 — `anisotropyEnable`, `maxAnisotropy`
+
+카메라 시선과 비스듬하게 만나는 지면이나 벽면의 텍스처 디테일을 선명하게 보존한다.
 
 ```c
-// samplerAnisotropy feature 활성화 필요
+// samplerAnisotropy 기능 활성화 필수
 samplerInfo.anisotropyEnable = VK_TRUE;
-samplerInfo.maxAnisotropy    = 16.0f;  // 1.0 ~ VkPhysicalDeviceLimits::maxSamplerAnisotropy
+// 디바이스 지원 상한을 초과하지 않도록 클램핑
+samplerInfo.maxAnisotropy    = std::min(8.0f, props.limits.maxSamplerAnisotropy);
 ```
 
-| 필드 | 의미 |
+| 필드 | 설명 |
 |------|------|
-| `anisotropyEnable` | anisotropic filtering on/off |
-| `maxAnisotropy` | 1.0 ~ `VkPhysicalDeviceLimits::maxSamplerAnisotropy` |
+| `anisotropyEnable` | 비등방성 필터링 활성화 여부 |
+| `maxAnisotropy` | 1.0부터 `VkPhysicalDeviceLimits::maxSamplerAnisotropy` 사이의 값 |
 
-> **스펙 원문 (VUID-VkSamplerCreateInfo-anisotropyEnable-01070)** If the `samplerAnisotropy` feature is not enabled, `anisotropyEnable` must be `VK_FALSE`.
->> feature가 꺼진 디바이스(보통 모바일 일부)에서는 무조건 OFF.
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-anisotropyEnable-01070)** `samplerAnisotropy` 기능이 켜져 있지 않으면 `anisotropyEnable`은 반드시 `VK_FALSE`여야 한다.
 
-> **스펙 원문 (VUID-VkSamplerCreateInfo-anisotropyEnable-01071)** If `anisotropyEnable` is `VK_TRUE`, `maxAnisotropy` must be between 1.0 and `VkPhysicalDeviceLimits::maxSamplerAnisotropy`, inclusive.
->> 보통 16.0까지. 1.0은 사실상 비활성.
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-anisotropyEnable-01071)** `anisotropyEnable`이 `VK_TRUE`일 때 `maxAnisotropy`는 1.0 이상, 디바이스의 `maxSamplerAnisotropy` 이하여야 한다. 1.0은 비등방성 필터링을 끈 것과 동일하다.
 
-**성능/품질 트레이드오프:**
+**하드웨어 지원 확인 및 비용 비교:**
+- 데스크톱 외장 GPU는 통상 16.0까지 지원하지만, 모바일이나 내장 GPU는 지원 한도가 낮거나 해당 기능을 제공하지 않을 수 있다. 따라서 16.0을 임의로 단정하지 말고 반드시 디바이스 한계값을 조회해야 한다.
+- 실무에서는 연산 비용과 품질을 고려하여 **4.0 또는 8.0**을 권장한다. 16.0은 8.0 대비 추가 성능 소모가 발생하지만 시각적 체감 차이는 미미하다.
 
-| maxAnisotropy | 품질 | 비용 |
-|---------------|------|------|
-| 1.0 | 트릴리니어와 동일 | baseline |
-| 2.0 | 살짝 개선 | ~1.5x |
-| 4.0 | 개선됨 | ~2x |
-| 8.0 | 잘 보임 | ~3x |
-| 16.0 | 사실상 최대 | ~4x |
-
-**실전 팁**: 대부분의 경우 4 또는 8로 충분. 16은 잘 안 보임.
-
-> **NOTE (스펙 발췌)** "For historical reasons, vendor implementations of anisotropic filtering interpret these sampler parameters in different ways, particularly in corner cases such as `magFilter, minFilter of VK_FILTER_NEAREST` or `maxAnisotropy equal to 1.0`. Applications should not expect consistent behavior in such cases, and should use anisotropic filtering only with parameters which are expected to give a quality improvement relative to LINEAR filtering."
->> NEAREST + anisotropy, anisotropy 1.0 같은 코너 케이스는 vendor마다 동작 다름. **LINEAR/LINEAR/LINEAR + anisotropy 2.0~16.0** 으로 쓰면 안정.
+> **스펙 참고** `NEAREST` 필터와 비등방성 필터링을 조합하거나 `maxAnisotropy`를 1.0으로 두는 경계 조건은 하드웨어 제조사마다 동작이 다를 수 있다. 안정적인 품질을 얻으려면 `LINEAR` 필터와 2.0 이상의 `maxAnisotropy` 조합을 사용하는 것이 좋다.
 
 ---
 
-## 6. Depth Compare (PCF) — `compareEnable`, `compareOp`
+## 6. 깊이 비교 (PCF) — `compareEnable`, `compareOp`
 
-그림자 매핑에서 깊이 텍스처를 **샘플링이 아니라 비교**할 때 사용.
+섀도 매핑에서 깊이 버퍼를 샘플링할 때 부동소수점 색상값을 읽는 대신, 지정된 참조 깊이와 비교한 결과를 반환하도록 설정한다.
 
 ```c
 samplerInfo.compareEnable = VK_TRUE;
 samplerInfo.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
 ```
 
-| 필드 | 의미 |
+| 필드 | 설명 |
 |------|------|
-| `compareEnable` | PCF on/off |
-| `compareOp` | 비교 연산 (`VK_COMPARE_OP_LESS_OR_EQUAL`이 그림자에서 표준) |
+| `compareEnable` | 깊이 비교(PCF) 활성화 여부 |
+| `compareOp` | 비교 연산자 (섀도 맵은 통상 `VK_COMPARE_OP_LESS_OR_EQUAL`) |
 
-> **스펙 원문 (VUID-VkSamplerCreateInfo-compareEnable-01423)** If `compareEnable` is `VK_TRUE`, the `reductionMode` member of `VkSamplerReductionModeCreateInfo` must be `VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE`.
->> PCF + min/max reduction은 호환 안 됨. reduction은 weighted average만.
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-compareEnable-01423)** `compareEnable`이 `VK_TRUE`인 경우 `VkSamplerReductionModeCreateInfo`의 리덕션 모드는 반드시 `VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE`여야 한다. PCF는 Min/Max 리덕션과 함께 쓸 수 없다.
 
-**셰이더 측 (GLSL):**
+**셰이더 구현 (GLSL):**
 
 ```glsl
 layout(set = 0, binding = 1) uniform sampler2DShadow shadowMap;
 
-// texture() 대신 sampler2DShadow는 직접 비교 결과를 반환
-float visibility = texture(shadowMap, vec3(shadowCoord.xy, shadowCoord.z));
-// visibility ∈ [0, 1] (그림자 안 = 0, 밖 = 1)
+// texture() 호출 시 z 컴포넌트가 비교 참조값으로 사용됨
+float shadowFactor = texture(shadowMap, vec3(shadowCoord.xy, shadowCoord.z));
+// 반환값은 0.0(완전한 그림자)과 1.0(빛에 완전 노출) 사이의 보간된 가시성 수치
 ```
 
-`sampler2DShadow`를 사용하면 `texture()` 호출 시 uv.z를 비교 reference로 사용.
+---
+
+## 7. 정규화되지 않은 좌표계 — `unnormalizedCoordinates`
+
+셰이더에서 텍스처를 읽을 때 [0, 1] 범위 대신 픽셀 텍셀 단위 좌표([0, width), [0, height))를 직접 사용한다.
+
+| 항목 | `unnormalizedCoordinates = VK_FALSE` (기본값) | `VK_TRUE` |
+|------|----------------------------------------------|-----------|
+| UV 좌표 범위 | [0.0, 1.0] | [0, width), [0, height) |
+| 이미지 뷰 타입 | 모든 차원(1D, 2D, 3D, Cube 등) 지원 | `1D`, `2D` 뷰만 허용 |
+| 밉맵 지원 | 지원 | **사용 불가** (`minLod = maxLod = 0`) |
+| 비등방성 / PCF | 지원 | **사용 불가** |
+| 어드레스 모드 | 모든 모드 지원 | `CLAMP_TO_EDGE` 또는 `CLAMP_TO_BORDER`만 허용 |
+
+> **스펙 발췌 (VUID-VkSamplerCreateInfo-unnormalizedCoordinates-01072~01077)** `unnormalizedCoordinates`가 `VK_TRUE`이면 `minFilter`와 `magFilter`가 같아야 하고, 밉맵은 `NEAREST`여야 하며, 비등방성 필터링과 깊이 비교는 모두 비활성화되어야 한다.
 
 ---
 
-## 7. `unnormalizedCoordinates` — 픽셀 단위 텍스처 좌표
+## 8. 특수 샘플러 플래그
 
-셰이더에서 `texture(samp, uv)` 호출 시 uv를 [0,1] 대신 **이미지 크기 단위 픽셀 좌표**로 사용.
-
-| | `unnormalizedCoordinates = VK_FALSE` (기본) | `VK_TRUE` |
-|---|------|------|
-| uv 범위 | [0, 1] | [0, width) / [0, height) |
-| view type 제한 | 없음 | `1D` 또는 `2D`만 |
-| mipmap | 가능 | **불가** |
-| anisotropy / compare | 가능 | **불가** |
-| addressModeW | 의미 있음 | **무시됨** |
-| addressMode U/V | 전체 | `CLAMP_TO_EDGE` 또는 `CLAMP_TO_BORDER`만 |
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-unnormalizedCoordinates-01072~01077)** If `unnormalizedCoordinates` is `VK_TRUE`: `minFilter == magFilter`, `mipmapMode == NEAREST`, `minLod == maxLod == 0`, `anisotropyEnable == VK_FALSE`, `compareEnable == VK_FALSE`, addressMode는 `CLAMP_TO_EDGE`/`CLAMP_TO_BORDER`만.
->> **모든 고급 기능 off**. 픽셀 아트 2D UI/타일맵에 한정.
-
-**실전**: 거의 안 씀. 호환성 문제로 게임 엔진도 거의 사용 안 함.
+| 플래그 | 용도 | 필요 기능/확장 |
+|--------|------|--------------|
+| `NON_SEAMLESS_CUBE_MAP_BIT_EXT` | 큐브맵 경계면 보간을 생략하는 구형 동작 모드 | `nonSeamlessCubeMap` |
+| `SUBSAMPLED_BIT_EXT` | 가변 래스터화 밀도 맵(FDM)과 결합하여 사용 | `VK_EXT_fragment_density_map` |
+| `DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT` | 디스크립터 버퍼 캡처 및 리플레이 | `descriptorBufferCaptureReplay` |
 
 ---
 
-## 8. `flags` — 특수 sampler 동작
+## 9. 리덕션 모드 (Min / Max 필터링)
 
-| 플래그 | 의미 | 필요 feature / extension |
-|--------|------|------------------------|
-| `SUBSAMPLED_BIT_EXT` | fragment density map과 함께 사용 | `VK_EXT_fragment_density_map` |
-| `SUBSAMPLED_COARSE_RECONSTRUCTION_BIT_EXT` | coarse 재구성 허용 | 동일 |
-| `NON_SEAMLESS_CUBE_MAP_BIT_EXT` | 큐브맵 면 사이 seamless 안 함 (전통 방식) | `nonSeamlessCubeMap` |
-| `DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT` | descriptor buffer 캡처/리플레이 | `descriptorBufferCaptureReplay` |
-| `IMAGE_PROCESSING_BIT_QCOM` | QCOM image processing 확장 명령에만 사용 | `VK_QCOM_image_processing` |
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-nonSeamlessCubeMap-06788)** If the `nonSeamlessCubeMap` feature is not enabled, `flags` must not include `VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT`.
-
----
-
-## 9. Reduction Mode (filter minmax)
-
-`VkSamplerReductionModeCreateInfo`를 pNext에 체이닝해 필터 결과를 **가중평균** 대신 **min/max**로 합친다. SSAO/Shadow 등 단일 채널 비교에 유용.
+`VkSamplerReductionModeCreateInfo` 구조체를 pNext 체인에 연결하여 인접 텍셀들을 가중 평균 대신 최솟값이나 최댓값으로 합성한다. SSAO 깊이 축소나 계층형 깊이 버퍼(Hi-Z) 구성에 쓰인다.
 
 ```c
 VkSamplerReductionModeCreateInfo rmci{};
@@ -247,17 +215,16 @@ rmci.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO;
 rmci.reductionMode = VK_SAMPLER_REDUCTION_MODE_MIN;
 
 VkSamplerCreateInfo si{};
+si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
 si.pNext = &rmci;
-si.magFilter = VK_FILTER_LINEAR;  // minmax filter feature 필요
-// ...
+si.magFilter = VK_FILTER_LINEAR;  // samplerFilterMinmax 기능 필요
 ```
-
-> **스펙 원문 (VUID-VkSamplerCreateInfo-pNext-06726)** If the `samplerFilterMinmax` feature is not enabled and the pNext chain includes a `VkSamplerReductionModeCreateInfo`, then the `reductionMode` must be `WEIGHTED_AVERAGE`.
->> feature 없으면 reduction mode가 있어도 무조건 weighted average.
 
 ---
 
-## 10. 전체 전형적 코드
+## 10. 전형적 코드 예제
+
+**범용 삼선형 비등방성 샘플러:**
 
 ```c
 VkSamplerCreateInfo si{};
@@ -270,110 +237,82 @@ si.addressModeV            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 si.addressModeW            = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 si.mipLodBias              = 0.0f;
 si.anisotropyEnable        = VK_TRUE;
-si.maxAnisotropy           = 8.0f;
+si.maxAnisotropy           = std::min(8.0f, props.limits.maxSamplerAnisotropy);
 si.compareEnable           = VK_FALSE;
 si.minLod                  = 0.0f;
 si.maxLod                  = VK_LOD_CLAMP_NONE;
 si.borderColor             = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
 si.unnormalizedCoordinates = VK_FALSE;
 
-VkSampler linearRepeatAniso8;
-vkCreateSampler(device, &si, nullptr, &linearRepeatAniso8);
+VkSampler linearRepeatSampler;
+vkCreateSampler(device, &si, nullptr, &linearRepeatSampler);
 ```
 
-PCF sampler (그림자):
+**그림자 PCF 샘플러:**
 
 ```c
-si.compareEnable = VK_TRUE;
-si.compareOp     = VK_COMPARE_OP_LESS_OR_EQUAL;
-si.anisotropyEnable = VK_FALSE;
-si.addressModeU/V/W = CLAMP_TO_BORDER;
-si.borderColor       = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-si.magFilter = si.minFilter = VK_FILTER_LINEAR;
-si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;  // PCF는 보통 NEAREST mip
-VkSampler pcfShadow;
-vkCreateSampler(device, &si, nullptr, &pcfShadow);
+VkSamplerCreateInfo si{};
+si.sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+si.magFilter               = VK_FILTER_LINEAR;
+si.minFilter               = VK_FILTER_LINEAR;
+si.mipmapMode              = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+si.addressModeU            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+si.addressModeV            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+si.addressModeW            = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+si.borderColor             = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;  // 그림자 외부를 빛에 노출
+si.anisotropyEnable        = VK_FALSE;
+si.compareEnable           = VK_TRUE;
+si.compareOp               = VK_COMPARE_OP_LESS_OR_EQUAL;
+si.minLod                  = 0.0f;
+si.maxLod                  = 0.0f;
+
+VkSampler shadowSampler;
+vkCreateSampler(device, &si, nullptr, &shadowSampler);
 ```
 
 ---
 
-## 11. 자주 빠지는 주의사항 모음
+## 11. 자주 발생하는 오류 점검 목록
 
-### 11.1. 필터 / address
+### 11.1. 필터 및 어드레스 모드
 
-- [ ] `VK_FILTER_CUBIC_EXT` 사용 + `anisotropyEnable = VK_TRUE` (VUID-magFilter-01081).
-- [ ] `CLAMP_TO_BORDER` + `borderColor = VK_BORDER_COLOR_*_CUSTOM_EXT`인데 `VkSamplerCustomBorderColorCreateInfoEXT`가 pNext에 없음 (VUID-borderColor-04011).
-- [ ] `customBorderColors` feature 비활성 + 커스텀 borderColor (VUID-customBorderColors-04085).
-- [ ] `samplerMirrorClampToEdge` feature 비활성 + `MIRROR_CLAMP_TO_EDGE` (VUID-addressModeU-01079).
-- [ ] YCbCr conversion + `anisotropyEnable`/`unnormalizedCoordinates`/비-CLAMP_TO_EDGE (VUID-addressModeU-01646).
+- [ ] `VK_FILTER_CUBIC_EXT` 필터를 사용하면서 `anisotropyEnable`을 활성화 (VUID-magFilter-01081).
+- [ ] `CLAMP_TO_BORDER`를 지정하고 커스텀 색상 비트를 쓰면서 pNext에 `VkSamplerCustomBorderColorCreateInfoEXT`를 누락 (VUID-borderColor-04011).
+- [ ] `samplerMirrorClampToEdge` 기능 없이 `MIRROR_CLAMP_TO_EDGE` 모드 지정 (VUID-addressModeU-01079).
+- [ ] 밉맵이 없는 텍스처에 `mipmapMode = LINEAR`를 지정하여 불필요한 LOD 보간 오버헤드 유발.
 
 ### 11.2. LOD / mipmap
 
 - [ ] `maxLod < minLod` (VUID-maxLod-01973).
-- [ ] `mipLodBias` 절댓값 > `VkPhysicalDeviceLimits::maxSamplerLodBias` (VUID-mipLodBias-01069).
+- [ ] `mipLodBias` 절댓값 > `maxSamplerLodBias` (VUID-mipLodBias-01069).
 - [ ] `portability_subset` 환경에서 `samplerMipLodBias = VK_FALSE`인데 `mipLodBias != 0` (VUID-samplerMipLodBias-04467).
-- [ ] mipmap이 없는 텍스처에 `mipmapMode = LINEAR` → LOD bias 계산 시 문제. **mipmap이 없는 텍스처는 `mipmapMode = NEAREST` + `minLod = maxLod = 0`** 이 안전.
+- [ ] 밉맵이 없는 텍스처에 `mipmapMode = LINEAR` → **밉맵 없는 텍스처는 `mipmapMode = NEAREST` + `minLod = maxLod = 0`이 안전**.
 
-### 11.3. Anisotropy
+### 11.3. 비등방성 필터링
 
-- [ ] `samplerAnisotropy` feature 비활성 + `anisotropyEnable = VK_TRUE` (VUID-anisotropyEnable-01070).
-- [ ] `maxAnisotropy`가 한계 초과 (VUID-anisotropyEnable-01071).
-- [ ] `anisotropyEnable = VK_TRUE`인데 `unnormalizedCoordinates = VK_TRUE` (VUID-unnormalizedCoordinates-01076).
-- [ ] CUBIC 필터 + anisotropy (VUID-magFilter-01081).
-- [ ] NEAREST + anisotropy 조합으로 vendor별 동작 차이 기대.
+- [ ] `samplerAnisotropy` 기능 활성화 여부를 확인하지 않고 `anisotropyEnable = VK_TRUE` 지정 (VUID-anisotropyEnable-01070).
+- [ ] 디바이스 한계값(`props.limits.maxSamplerAnisotropy`)을 질의하지 않고 `maxAnisotropy`를 16.0으로 하드코딩하여 검증 에러 유발.
+- [ ] `anisotropyEnable = VK_TRUE`와 `unnormalizedCoordinates = VK_TRUE`를 동시에 지정 (VUID-unnormalizedCoordinates-01076).
 
-### 11.4. PCF / compare
+### 11.4. 깊이 비교 (PCF)
 
-- [ ] `compareEnable = VK_TRUE`인데 `compareOp` 무효 값 (VUID-compareEnable-01080).
-- [ ] `compareEnable = VK_TRUE` + `VkSamplerReductionModeCreateInfo{reductionMode = MIN/MAX}` (VUID-compareEnable-01423).
-- [ ] 셰이더에서 `sampler2DShadow`로 선언했는데 sampler의 `compareEnable = VK_FALSE` (또는 반대) — 일부는 셰이더 상태 우선.
-- [ ] `compareEnable = VK_TRUE` + `unnormalizedCoordinates = VK_TRUE` (VUID-unnormalizedCoordinates-01077).
+- [ ] `compareEnable = VK_TRUE`인데 `compareOp`에 무효한 연산자 지정 (VUID-compareEnable-01080).
+- [ ] `compareEnable = VK_TRUE` 상태에서 Min/Max 리덕션 모드를 결합 (VUID-compareEnable-01423).
+- [ ] 셰이더에서 `sampler2DShadow`로 선언했으나 샘플러 생성 시 `compareEnable = VK_FALSE`로 설정 (또는 그 반대).
 
-### 11.5. unnormalizedCoordinates
+### 11.5. 구조 및 성능
 
-- [ ] `unnormalizedCoordinates = VK_TRUE` + mipmap/PCF/anisotropy (VUID-unnormalizedCoordinates-01072~01077).
-- [ ] `unnormalizedCoordinates = VK_TRUE`인데 `addressModeW`가 `REPEAT` 등 → 무시되지만 의미가 헷갈림.
-- [ ] 3D/큐브/배열 view에 unnormalized 사용 — 제한(`1D`/`2D`만).
-
-### 11.6. Reduction mode / flags
-
-- [ ] `samplerFilterMinmax` 비활성 + reduction pNext (VUID-pNext-06726). 명시적으로 `WEIGHTED_AVERAGE`만 가능.
-- [ ] `nonSeamlessCubeMap` 비활성 + `NON_SEAMLESS_CUBE_MAP_BIT_EXT` (VUID-nonSeamlessCubeMap-06788).
-- [ ] `SUBSAMPLED_BIT_EXT` + anisotropy/PCF/mipmap LINEAR (VUID-flags-02574..02580).
-- [ ] `descriptorBufferCaptureReplay` 비활성 + `DESCRIPTOR_BUFFER_CAPTURE_REPLAY_BIT_EXT` (VUID-flags-08110).
-- [ ] `VkOpaqueCaptureDescriptorDataCreateInfoEXT` pNext + 플래그 안 켬 (VUID-pNext-08111).
-
-### 11.7. 일반 / 실전
-
-- [ ] 디바이스 한계 조회 안 하고 `maxAnisotropy`를 16으로 무조건 설정.
-- [ ] 모든 텍스처에 같은 sampler 하나만 쓰려고 함 — 일반적으로 **용도별로 여러 sampler 풀** 필요 (반복/클램프, PCF/일반, etc.).
-- [ ] sampler 풀을 사용하지 않고 매 프레임 생성/파괴.
-- [ ] 비등방 셰이딩에서 `mipLodBias` 음수로 sharp mip 강제 → anisotropy와 중복 효과, 성능만 나빠질 수 있음.
-- [ ] 셰이더에서 `texture()` LOD-clamped sampler를 사용 + 명시적 LOD bias를 함께 줘서 LOD 계산 결과가 `maxLod` 초과.
+- [ ] 샘플러를 풀링하지 않고 매 프레임 생성 및 파괴를 반복하는 문제 (초기화 시점에 용도별로 사전 생성 권장).
+- [ ] 모든 텍스처에 단 하나의 샘플러만 적용하려다 클램핑과 반복 래핑이 충돌하는 문제.
 
 ---
 
-## 12. 한 표로 보는 권장 sampler 프리셋
+## 12. 권장 샘플러 프리셋 요약
 
-| 용도 | mag | min | mipmap | address | aniso | compare | 비고 |
-|------|-----|-----|--------|---------|-------|---------|------|
-| 3D 씬 일반 | LINEAR | LINEAR | LINEAR | REPEAT | 4~8 | FALSE | 트릴리니어 + aniso |
-| UI 텍스처 | NEAREST | NEAREST | NEAREST | CLAMP_TO_EDGE | FALSE | FALSE | 격자 유지 |
-| 데칼 | LINEAR | LINEAR | NEAREST | CLAMP_TO_EDGE | FALSE | FALSE | 알파 블렌드 |
-| 그림자 PCF | LINEAR | LINEAR | NEAREST | CLAMP_TO_BORDER | FALSE | LESS_OR_EQUAL | border=OpaqueWhite |
-| 큐브맵 환경 | LINEAR | LINEAR | LINEAR | (없음) | 4~8 | FALSE | 큐브 view |
-| Normal map | LINEAR | LINEAR | LINEAR | REPEAT | 8 | FALSE | 셰이더에서 압축 해제 |
-| HDR sky | LINEAR | LINEAR | LINEAR | CLAMP_TO_EDGE | FALSE | FALSE | tonemap 후 |
-
----
-
-## 13. 빠른 참조 — 자주 보는 조합
-
-| 의도 | 핵심 설정 |
-|------|----------|
-| 부드러운 3D 텍스처 | LINEAR/LINEAR/LINEAR + REPEAT + aniso 4 |
-| 픽셀 정확 2D | NEAREST/NEAREST/NEAREST + CLAMP_TO_EDGE + aniso OFF |
-| 그림자 부드럽게 | LINEAR/LINEAR/NEAREST + CLAMP_TO_BORDER + compare LESS_OR_EQUAL + border white |
-| mip 없는 텍스처 | NEAREST/NEAREST/NEAREST + minLod=maxLod=0 |
-| HDR env | LINEAR/LINEAR/LINEAR + CLAMP_TO_EDGE + aniso 8 |
-| LUT lookup | NEAREST/NEAREST/NEAREST + CLAMP_TO_EDGE + aniso OFF |
+| 용도 | 필터 (mag/min/mip) | 어드레스 모드 | 비등방성 | 깊이 비교 | 특징 |
+|------|-------------------|--------------|----------|----------|------|
+| 3D 메쉬 표면 | LINEAR / LINEAR / LINEAR | `REPEAT` | 4.0 ~ 8.0 | `VK_FALSE` | 삼선형 보간 기본형 |
+| UI 및 폰트 | NEAREST / NEAREST / NEAREST | `CLAMP_TO_EDGE` | 끄기 | `VK_FALSE` | 서브픽셀 번짐 방지 |
+| 스프라이트 / 데칼 | LINEAR / LINEAR / NEAREST | `CLAMP_TO_EDGE` | 끄기 | `VK_FALSE` | 경계선 클램핑 |
+| 섀도 맵 (PCF) | LINEAR / LINEAR / NEAREST | `CLAMP_TO_BORDER` | 끄기 | `LESS_OR_EQUAL` | 경계 흰색 채움 |
+| 환경 큐브맵 | LINEAR / LINEAR / LINEAR | `CLAMP_TO_EDGE` | 4.0 ~ 8.0 | `VK_FALSE` | 큐브맵 뷰 전용 |

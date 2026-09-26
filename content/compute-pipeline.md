@@ -5,28 +5,27 @@ slug: compute-pipeline
 
 ## 소개
 
-Vulkan의 컴퓨트 파이프라인(VkComputePipeline)은 그래픽스 파이프라인보다 훨씬 간단하다. **단일 컴퓨트 셰이더 스테이지**와 **파이프라인 레이아웃**만 있으면 된다. 고정 함수 유닛(래스터화, 블렌딩 등)은 전혀 존재하지 않는다.
+Vulkan의 컴퓨트 파이프라인(`VkComputePipeline`)은 그래픽스 파이프라인에 비해 구조가 단순하다. 래스터화, 프레임버퍼, 블렌딩과 같은 고정 함수 단계가 없으며, **단일 컴퓨트 셰이더 스테이지**와 **파이프라인 레이아웃**만으로 구성된다.
 
-> **용어 정리**
-> - **Compute Shader**: GPU에서 실행되는 병렬 계산 프로그램
-> - **Workgroup**: 스레드의 묶음. 같은 workgroup 안에서는 데이터 공유가 가능하다
-> - **Invocation**: 컴퓨트 셰이더의 단일 실행 단위 (= 한 스레드)
-> - **Dispatch**: 컴퓨트 작업을 GPU에 제출하는 명령
+### 주요 용어
+- **Compute Shader**: 범용 병렬 연산(GPGPU)을 수행하는 프로그래머블 셰이더
+- **Workgroup**: 로컬 스레드들의 실행 묶음. 동일 워크그룹 내부에서는 온칩 공유 메모리(`shared`)와 실행 배리어(`barrier()`)로 데이터를 교환하고 동기화할 수 있다.
+- **Invocation**: 컴퓨트 셰이더 코드를 실행하는 단일 스레드 단위
+- **Dispatch**: GPU에 워크그룹 그리드를 발행하는 커맨드 실행 명령
 
 ---
 
-## 1. 그래픽스 파이프라인과의 차이
+## 1. 그래픽스 파이프라인과의 차이점
 
-| 항목 | Graphics Pipeline | Compute Pipeline |
-|------|-----------------|-----------------|
-| 셰이더 | VS + FS (+ TCS/TES/GS/Task/Mesh) | **CS 하나** (단일 스테이지) |
-| 고정 함수 | VertexInput, IA, Raster, MS, DS, CB 등 | **없음** |
-| Render Pass | 필요 | 불필요 |
-| Framebuffer | 필요 | 불필요 |
-| 입력 | 버텍스 버퍼 / 인덱스 버퍼 / Push Constant / Descriptor | Push Constant / Descriptor |
-| 출력 | Color Attachment / DepthStencil | Storage Buffer / Storage Image (UAV) |
-| 호출 방식 | `vkCmdDraw*` | `vkCmdDispatch*` |
-| 실행 단위 | 정점 → 프리미티브 → 프래그먼트 | **Workgroup → Invocation** |
+| 항목 | 그래픽스 파이프라인 | 컴퓨트 파이프라인 |
+|------|-------------------|-----------------|
+| **셰이더 스테이지** | VS, FS (+ TCS, TES, GS, Task, Mesh) | **CS 단일 스테이지** |
+| **고정 함수 유닛** | Vertex Input, Rasterizer, Depth/Stencil, Blend 등 | **없음** |
+| **렌더 패스 / 프레임버퍼** | 필수 | **불필요** |
+| **주요 입력** | 정점 버퍼, 인덱스 버퍼, Push Constant, Descriptor | Push Constant, Descriptor (SSBO, UBO, 텍스처 등) |
+| **주요 출력** | Color Attachment, Depth/Stencil Buffer | Storage Buffer, Storage Image (UAV) |
+| **실행 커맨드** | `vkCmdDraw*` | `vkCmdDispatch*` |
+| **실행 계층** | 정점 → 프리미티브 → 프래그먼트 | **Workgroup 그리드 → Invocation** |
 
 ---
 
@@ -37,353 +36,310 @@ typedef struct VkComputePipelineCreateInfo {
     VkStructureType                    sType;
     const void*                        pNext;
     VkPipelineCreateFlags              flags;
-    VkPipelineShaderStageCreateInfo    stage;          // 하나만!
+    VkPipelineShaderStageCreateInfo    stage; // 단일 스테이지 구조체
     VkPipelineLayout                   layout;
     VkPipeline                         basePipelineHandle;
     int32_t                            basePipelineIndex;
 } VkComputePipelineCreateInfo;
 ```
 
-스펙(10.3. Compute Pipelines)의 설명:
-
-> Compute pipelines consist of a single static compute shader stage and the pipeline layout.
-
-그래픽스 파이프라인과 달리 `VkPipelineShaderStageCreateInfo`를 배열로 받지 않고 **단일 구조체**로 받는다.
+컴퓨트 파이프라인은 여러 스테이지를 배열로 받지 않고 `VkPipelineShaderStageCreateInfo` 단일 멤버를 직접 지정한다.
 
 ```c
 VkComputePipelineCreateInfo compCI{};
 compCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 compCI.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-compCI.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; // 필수!
+compCI.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; // 반드시 COMPUTE_BIT 지정
 compCI.stage.module = computeShaderModule;
 compCI.stage.pName = "main";
-compCI.layout = pipelineLayout; // Descriptor Set Layout + Push Constant 포함
+compCI.layout = pipelineLayout; // 디스크립터 세트 레이아웃 및 푸시 상수 정의
 
 VkPipeline computePipeline;
-vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &compCI, nullptr, &computePipeline);
+vkCreateComputePipelines(device, pipelineCache, 1, &compCI, nullptr, &computePipeline);
 ```
 
-**유효성 규칙:**
-- `stage.stage`는 반드시 `VK_SHADER_STAGE_COMPUTE_BIT`여야 함
-- `layout`의 `VkPipelineLayout`은 셰이더가 사용하는 모든 descriptor / push constant를 포함해야 함
-- `VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`는 `shaderEnqueue` feature가 꺼져 있으면 쓸 수 없음 (VUID-shaderEnqueue-09177)
-- `VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV`는 `deviceGeneratedComputePipelines` feature 필요 (NV)
-- 메시 셰이더나 레이 트레이싱 관련 flag는 전부 금지
+### 유효성 검증 규칙
+- `stage.stage`는 반드시 `VK_SHADER_STAGE_COMPUTE_BIT`여야 한다.
+- `layout`은 셰이더가 접근하는 모든 디스크립터 세트와 푸시 상수 범위를 온전히 포함해야 한다.
+- 파이프라인 라이브러리(`VK_PIPELINE_CREATE_LIBRARY_BIT_KHR`): 일반적인 파이프라인 라이브러리는 `VK_KHR_pipeline_library` 확장을 기반으로 하며, 컴퓨트 파이프라인에서 라이브러리 플래그를 사용하는 특수 경로(예: AMDX 디스패치 그래프)에서는 `shaderEnqueue` 기능이 활성화되어 있어야 한다(VUID-VkComputePipelineCreateInfo-shaderEnqueue-09177).
+- `VK_PIPELINE_CREATE_INDIRECT_BINDABLE_BIT_NV`는 `deviceGeneratedComputePipelines` 피처가 활성화된 환경에서만 유효하다.
+- 그래픽스 파이프라인 전용 플래그(메시 셰이더, 레이 트레이싱 등)는 컴퓨트 파이프라인 생성에 지정할 수 없다.
 
 ---
 
 ## 3. GLSL 컴퓨트 셰이더 기본 구조
 
-컴퓨트 셰이더는 그래픽스 셰이더와 달리 `main()`이 **각 스레드마다 실행**된다.
-
-> **비유**: 공장 컨베이어 벨트. 각 작업자(스레드)가 자기 물건(데이터)만 처리하면 된다. 전체 작업량은 `dispatch`로 지정하고, 각 작업자는 `gl_GlobalInvocationID`로 "내가 몇 번째 물건 담당인지"를 안다.
+컴퓨트 셰이더는 `main()` 함수가 발행된 모든 인보케이션(스레드)에서 병렬로 실행된다. 각 스레드는 고유한 내장 변수를 참조하여 자신이 처리할 데이터의 인덱스를 판별한다.
 
 ```glsl
 #version 460 core
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-// Descriptor: Storage Buffer
-layout(set = 0, binding = 0) buffer InputBuffer {
-    float data[];
-} inputBuf;
+// 입력 스토리지 버퍼
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float inData[];
+};
 
-layout(set = 0, binding = 1) buffer OutputBuffer {
-    float data[];
-} outputBuf;
+// 출력 스토리지 버퍼
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    float outData[];
+};
 
-// Push Constant
+// 푸시 상수
 layout(push_constant) uniform PushConstants {
-    int numElements;
+    uint numElements;
 } pc;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx < pc.numElements) {
-        outputBuf.data[idx] = inputBuf.data[idx] * 2.0;
+        outData[idx] = inData[idx] * 2.0;
     }
 }
 ```
 
-**핵심 키워드:**
-- `local_size_*`: workgroup 크기 (스레드/워크그룹)
-- `gl_GlobalInvocationID.x` = `gl_WorkGroupID.x * gl_WorkGroupSize.x + gl_LocalInvocationID.x`
-- `gl_NumWorkGroups`: dispatch에 전달된 전체 workgroup 수
-- `gl_LocalInvocationIndex`: workgroup 내 1차원 인덱스
+### 주요 내장 변수
+- `local_size_*`: 워크그룹 1개를 구성하는 3차원 인보케이션 개수
+- `gl_GlobalInvocationID`: 전체 디스패치 그리드 내에서 현재 인보케이션의 고유 3차원 좌표  
+  $$\text{gl\_GlobalInvocationID} = \text{gl\_WorkGroupID} \times \text{gl\_WorkGroupSize} + \text{gl\_LocalInvocationID}$$
+- `gl_WorkGroupID`: 디스패치 그리드 내에서 현재 워크그룹의 3차원 인덱스
+- `gl_LocalInvocationID`: 현재 워크그룹 내부에서 인보케이션의 3차원 인덱스
+- `gl_LocalInvocationIndex`: 워크그룹 내 1차원 평탄화 인덱스 ($0 \le \text{index} < \text{local\_size\_x} \times \text{local\_size\_y} \times \text{local\_size\_z}$)
+- `gl_NumWorkGroups`: `vkCmdDispatch`로 발행된 전체 워크그룹 개수
 
 ---
 
-## 4. Dispatch (실행)
+## 4. 디스패치 (실행)
+
+> [!NOTE]
+> `vkCmdDispatch` 및 `vkCmdDispatchIndirect`는 **렌더 패스 인스턴스 외부**에서만 호출할 수 있다. 렌더 패스 내부에서 컴퓨트 작업을 실행하려면 렌더 패스를 종료한 후 디스패치하거나, Dynamic Rendering 환경에서는 `vkCmdEndRendering` 이후에 호출해야 한다.
 
 ```c
 // 파이프라인 바인딩
 vkCmdBindPipeline(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 
-// Descriptor Set 바인딩
+// 디스크립터 세트 바인딩
 vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
     pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
-// Push Constant 전송
+// 푸시 상수 전달
 vkCmdPushConstants(cmdBuffer, pipelineLayout,
-    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(int), &numElements);
+    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t), &numElements);
 
-// Dispatch: (groupCountX, groupCountY, groupCountZ)
-int groupCountX = (numElements + 255) / 256; // local_size_x = 256 기준
+// 디스패치 발행: (groupCountX, groupCountY, groupCountZ)
+uint32_t groupCountX = (numElements + 255) / 256; // local_size_x = 256 기준 올림 계산
 vkCmdDispatch(cmdBuffer, groupCountX, 1, 1);
 ```
 
-총 실행되는 invocation 수:
-```
-groupCountX × groupCountY × groupCountZ × local_size_x × local_size_y × local_size_z
-```
+총 실행되는 인보케이션 개수는 다음과 같다.
+$$\text{Total Invocations} = (\text{groupCountX} \times \text{groupCountY} \times \text{groupCountZ}) \times (\text{local\_size\_x} \times \text{local\_size\_y} \times \text{local\_size\_z})$$
 
-예: `vkCmdDispatch(4, 1, 1)` + `local_size_x = 256` = 1024 invocations
+### 4.1. 디스패치 및 워크그룹 하드웨어 한계값
 
-### 4.1. Dispatch / Workgroup 크기 한계
+디바이스의 하드웨어 한계(`VkPhysicalDeviceLimits`)를 초과하여 디스패치하거나 워크그룹 크기를 선언하면 안 된다. 초과 시 스펙 위반이다(VUID-vkCmdDispatch-groupCountX-00386, groupCountY-00387, groupCountZ-00388).
 
-`vkCmdDispatch`와 `local_size_*`는 디바이스 한계 안에 있어야 한다:
-
-| 한계 | 의미 | 일반 값 |
-|------|------|---------|
-| `maxComputeWorkGroupCount[3]` | dispatch의 (x,y,z) 차원별 workgroup 최대 | (65535, 65535, 65535) |
-| `maxComputeWorkGroupSize[3]` | `local_size_*` 차원별 최대 | (1024, 1024, 64) |
-| `maxComputeWorkGroupInvocations` | `local_size_x*y*z` 곱의 최대 | 1024 |
-
-> **스펙 원문 (VUID-vkCmdDispatch-groupCountX-00386..00388)** `groupCountX/Y/Z`는 `maxComputeWorkGroupCount` 이하여야 한다.
-> **(VUID-RuntimeSpirv-x-06429..06432)** `local_size_x*y*z`가 `maxComputeWorkGroupInvocations`를 초과하면 안 되고, 각 차원이 `maxComputeWorkGroupSize`를 넘어도 안 된다.
-
-```c
-VkPhysicalDeviceLimits limits = props.limits;
-// limits.maxComputeWorkGroupCount[0..2]
-// limits.maxComputeWorkGroupSize[0..2]
-// limits.maxComputeWorkGroupInvocations
-```
+| 한계값 프로퍼티 | 의미 | 일반적인 값 (데스크톱 dGPU) |
+|----------------|------|---------------------------|
+| `maxComputeWorkGroupCount[3]` | 디스패치 시 (X, Y, Z) 차원별 최대 워크그룹 수 | (65535, 65535, 65535) 또는 그 이상 |
+| `maxComputeWorkGroupSize[3]` | `local_size_*`의 차원별 최대 인보케이션 수 | (1024, 1024, 64) |
+| `maxComputeWorkGroupInvocations` | 워크그룹당 총 인보케이션 곱($\text{X} \times \text{Y} \times \text{Z}$)의 최대치 | 1024 |
 
 ---
 
-## 5. Workgroup 구조
+## 5. Workgroup 구조 및 계층
 
-컴퓨트 셰이더의 실행 단계를 이해하는 것이 중요하다.
-
-> **왜 workgroup으로 나눌까?** GPU는 수천 개의 스레드를 동시에 실행한다. 이들을 하나의 그룹으로 묶으면, 그룹 내에서 **공유 메모리**나 **배리어 동기화**를 사용할 수 있다. 반대로 다른 그룹끼리는 완전히 독립적으로 실행된다.
+GPU는 수많은 스레드를 대규모 병렬로 실행한다. 이들을 워크그룹 단위로 묶음으로써, 동일 그룹 내부에서 **온칩 공유 메모리**와 **실행 배리어 동기화**를 지원한다. 서로 다른 워크그룹은 완전히 독립적으로 스케줄링되며 실행 순서가 보장되지 않는다.
 
 ```flowchart
-flowchart TD
-  A(["Dispatch"])
+  A(["Dispatch (groupCount = 4,1,1)"])
   B["Workgroup (0,0,0) — 256 threads"]
-  C["LocalInvocation 0 — gl_GlobalInvocationID = (0,0,0)"]
-  D["LocalInvocation 1 — gl_GlobalInvocationID = (1,0,0)"]
+  C["LocalInvocation 0 — GlobalID = (0,0,0)"]
+  D["LocalInvocation 1 — GlobalID = (1,0,0)"]
   E["..."]
   F["LocalInvocation 255"]
   G["Workgroup (1,0,0) — 256 threads"]
-  H["..."]
-  I["Workgroup (2,0,0)"]
-  J["Workgroup (3,0,0)"]
-  K["총 4 × 256 = 1024 invocations"]
+  H["Workgroup (2,0,0) — 256 threads"]
+  I["Workgroup (3,0,0) — 256 threads"]
+  J["총 4 × 256 = 1024 invocations"]
   A --> B
   B --> C
   B --> D
   B --> E
   B --> F
-  B --> G
-  G --> H
-  H --> I
-  I --> J
-  J --> K
+  A --> G
+  A --> H
+  A --> I
+  B & G & H & I --> J
 ```
 
-**각 invocation은 독립적으로 실행**되지만, 같은 workgroup 안에서는 다음이 가능:
+동일 워크그룹 내 인보케이션 간에는 다음 기능을 활용할 수 있다.
 
 | 기능 | 설명 |
 |------|------|
-| `shared` (Local Memory) | 워크그룹 내 공유 메모리 (~32-48KB, 하드웨어 의존) |
-| `barrier()` | 워크그룹 내 모든 invocation의 실행 동기화 |
-| `atomic*()` | shared memory 또는 buffer에 대한 원자 연산 |
-| `gl_LocalInvocationID` | workgroup 내 인덱스 (0 ~ local_size-1) |
-| `gl_WorkGroupID` | dispatch 내 workgroup 인덱스 |
+| `shared` (온칩 로컬 메모리) | 워크그룹 전용 고속 공유 메모리. 코어 최소 보장값은 16384바이트(`maxComputeSharedMemorySize`), 실제 디바이스는 32~64KB를 지원하는 경우가 많음 |
+| `barrier()` | 워크그룹 내 모든 인보케이션의 실행 흐름을 일치시키는 동기화 배리어 |
+| `memoryBarrierShared()` | 공유 메모리 쓰기 작업의 가시성을 워크그룹 내에 보장 |
+| `atomic*()` | 공유 메모리 또는 버퍼에 대한 원자적(Atomic) 읽기-수정-쓰기 연산 |
 
 ---
 
-## 6. Shared Memory (Workgroup Local Memory)
+## 6. Shared Memory (공유 메모리)
 
-같은 워크그룹 내에서 invocation끼리 데이터를 공유할 때 사용한다.
-
-> **용도** 전역 메모리(GPU VRAM)는 느리다. 같은 workgroup 스레드들이 같은 데이터를 반복 접근한다면, on-chip 공유 메모리에 복사해두면 훨씬 빠르다. L1 캐시와 비슷한 역할이라고 생각하면 된다.
-
-> **주의**: 공유 메모리는 하드웨어마다 크기가 다르다 (보통 32~48KB). 너무 많이 쓰면 워크그룹 크기를 줄여야 할 수도 있다.
+전역 메모리(VRAM)는 대역폭과 레이턴시 비용이 높다. 동일 워크그룹의 스레드들이 인접 데이터를 반복적으로 참조할 때는 데이터를 온칩 공유 메모리에 올려두고 연산하면 성능을 크게 개선할 수 있다.
 
 ```glsl
 layout(local_size_x = 256) in;
 
-// Workgroup shared memory
+// 워크그룹 공유 메모리 선언
 shared float tile[256];
 
 void main() {
-    uint idx = gl_LocalInvocationIndex;
+    uint lid = gl_LocalInvocationIndex;
+    uint gid = gl_GlobalInvocationID.x;
 
-    // 1. 전역 메모리에서 shared로 로드
-    tile[idx] = inputBuf.data[gl_GlobalInvocationID.x];
+    // 1. 전역 메모리에서 공유 메모리로 협력 로드
+    tile[lid] = inData[gid];
 
-    // 2. 모든 invocation이 로드를 끝낼 때까지 기다림
+    // 2. 워크그룹 내 모든 스레드의 로드가 완료될 때까지 대기
     barrier();
 
-    // 3. 이제 이웃 invocation의 데이터를 읽을 수 있음
-    float left  = tile[(idx > 0) ? idx - 1 : idx];
-    float right = tile[(idx < 255) ? idx + 1 : idx];
+    // 3. 이웃 스레드가 로드한 데이터를 안전하게 참조 (컨볼루션 예시)
+    float left  = (lid > 0) ? tile[lid - 1] : tile[lid];
+    float right = (lid < 255) ? tile[lid + 1] : tile[lid];
 
-    // 4. 병합 후 전역 메모리에 쓰기
-    outputBuf.data[gl_GlobalInvocationID.x] = (tile[idx] + left + right) / 3.0;
+    // 4. 연산 결과를 전역 메모리에 기록
+    outData[gid] = (tile[lid] + left + right) / 3.0;
 }
 ```
 
-**Shared Memory를 활용하는 전형적인 패턴:**
-
-| 패턴 | 예시 |
-|------|------|
-| Reduction | 합계/최대값 구하기 (병렬 반으로 줄이기) |
-| Stencil / Convolution | 주변 픽셀 읽기 (tile + halo) |
-| Prefix Sum (Scan) | 병렬 누적 합 |
-| Histogram | 워크그룹별 local histogram → 글로벌 병합 |
+### 전형적인 공유 메모리 활용 패턴
+- **리덕션(Reduction)**: 합계, 최댓값, 최솟값을 워크그룹 내에서 트리 형태로 축약
+- **공간 필터링 / 컨볼루션**: 블러, 엣지 검출 등 주변 픽셀(Halo 영역)을 공유 메모리에 캐싱
+- **접두사 합(Prefix Sum / Scan)**: 병렬 누적 합 연산
+- **로컬 히스토그램**: 워크그룹 단위 로컬 카운터를 집계한 뒤 전역 버퍼에 병합
 
 ---
 
 ## 7. DispatchIndirect (간접 디스패치)
 
-GPU가 직접 workgroup 수를 결정하게 하려면 `vkCmdDispatchIndirect`를 사용한다.
-
-> **언제 쓰나?** 예를 들어 가시성 테스트(occlusion culling) 결과에 따라 렌더링할 객체 수가 달라질 때. 컴퓨트 셰이더가 "몇 개를 그릴지" 계산해서 indirect buffer에 쓰고, 그걸 기반으로 다시 dispatch한다. GPU-Driven 렌더링의 핵심 기법이다.
+CPU 대신 GPU가 직접 워크그룹 수를 계산하여 디스패치하도록 만들려면 `vkCmdDispatchIndirect`를 사용한다.
 
 ```c
-// Indirect dispatch buffer (GPU가 채움)
-VkBuffer indirectBuffer; // VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
+// VkDispatchIndirectCommand는 Vulkan 헤더에 이미 정의되어 있으므로 재정의하지 않는다.
+// typedef struct VkDispatchIndirectCommand {
+//     uint32_t x;  // groupCountX
+//     uint32_t y;  // groupCountY
+//     uint32_t z;  // groupCountZ
+// } VkDispatchIndirectCommand;
 
-// CPU에서 직접 채울 수도 있음
-struct DispatchIndirectCommand {
-    uint32_t x; // groupCountX
-    uint32_t y; // groupCountY
-    uint32_t z; // groupCountZ
-} cmd = { 4, 1, 1 };
-// indirectBuffer에 쓰기
-
-// 간접 디스패치
+// 간접 디스패치 실행 — 버퍼에 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT 필수
 vkCmdDispatchIndirect(cmdBuffer, indirectBuffer, offset);
 ```
 
-활용 예:
-- Compute shader가 workgroup 수를 계산해서 `indirectBuffer`에 씀
-- Visibility buffer 기반 간접 디스패치
-- GPU-Driven 파이프라인 (GPU가 다음 dispatch의 크기를 결정)
+### 주요 활용 사례
+- **오클루전 컬링(Occlusion Culling)**: 가시성 검사 결과를 바탕으로 가시 메시렛 수를 계산해 후속 디스패치 그리드 크기 결정
+- **가변 파티클 시뮬레이션**: 살아남은 파티클 개수에 맞추어 시뮬레이션 워크그룹 발행
+- **GPU-Driven 렌더링 파이프라인**: CPU의 프레임별 개입 없이 GPU 내부 연산 결과만으로 다음 파이프라인 단계를 연속 트리거
 
 ---
 
-## 8. Pipeline Barrier와 Compute
+## 8. 파이프라인 배리어와 동기화
 
-컴퓨트 파이프라인도 동기화가 필요하다. 기본적으로 `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`와 `VK_ACCESS_SHADER_WRITE_BIT` / `VK_ACCESS_SHADER_READ_BIT`를 사용한다.
-
-> **용도** 컴퓨트 셰이더가 buffer에 데이터를 썼는데, 바로 다음 셰이더가 그걸 읽으려고 한다. GPU가 병렬로 실행하다 보면 "아직 쓰기 전인데 읽는" 상황이 생길 수 있다. Barrier로 "쓰기가 끝날 때까지 기다려"라고 명시해야 한다.
+컴퓨트 셰이더가 기록한 버퍼 데이터를 후속 작업(다른 컴퓨트 디스패치 또는 그래픽스 드로우)에서 안전하게 읽으려면 메모리 배리어가 필수적이다. 배리어를 누락하면 쓰기가 완료되기 전에 읽는 RAW(Read-After-Write) 데이터 레이스가 발생한다.
 
 ```c
-// 컴퓨트 dispatch → 이후 다른 dispatch 또는 그래픽스에서 읽기
+// 컴퓨트 쓰기 완료 후 후속 컴퓨트 읽기로의 전환 배리어
 VkMemoryBarrier barrier{};
 barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT; // 컴퓨트 셰이더 쓰기
+barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;  // 다음 셰이더 읽기
 
-vkCmdPipelineBarrier(cmdBuffer,
-    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,    // src: 컴퓨트 쓰기 완료
-    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,    // dst: 다음 컴퓨트 읽기
+vkCmdPipelineBarrier(
+    cmdBuffer,
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, // src: 이전 컴퓨트 완료 대기
+    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, // dst: 다음 컴퓨트 시작 전 가시성 확보
     0,
-    1, &barrier,                              // memory barrier
+    1, &barrier,                          // 메모리 배리어
     0, nullptr,
-    0, nullptr);
+    0, nullptr
+);
 ```
 
 ---
 
-## 9. 컴퓨트에 유용한 확장 기능들
+## 9. 컴퓨트 관련 유용한 확장 및 최신 기능
 
-### 9.1. `VK_KHR_shader_float16_int8` (Vulkan 1.2)
-- FP16 / INT8 데이터 타입 지원. AI/ML 워크로드에서 성능 향상.
+### 9.1. `VK_KHR_shader_float16_int8` (Vulkan 1.2 코어)
+- 16비트 반정밀도 부동소수점(`float16_t`) 및 8비트 정수 연산을 지원한다. 머신러닝 추론이나 대규모 파티클 연산에서 메모리 대역폭을 절감하고 연산 처리량을 높인다.
 
-### 9.2. Subgroup (VK_KHR_shader_subgroup_*)
-- **Subgroup**은 워크그룹보다 작은 실행 단위(보통 32~64 invocation, warp/wavefront). 같은 subgroup 안에서는 별도 barrier 없이도 볼록하게 실행된다고 보장.
-- `gl_SubgroupID`, `gl_SubgroupInvocationID`, `gl_SubgroupSize`로 인덱스를 얻는다.
-- `VK_KHR_shader_subgroup_extended_types` (1.2): subgroup ballot, shuffle, broadcast 등. `subgroupBarrier()`, `subgroupAdd()`, `subgroupBroadcast()` 등.
-- `VK_KHR_shader_subgroup_ballot` / `VK_KHR_shader_subgroup_vote` (1.1): `subgroupBallot()`, `subgroupAll()` 등.
-- 지원 여부: `VkPhysicalDeviceSubgroupProperties::subgroupSize`, `supportedStages`, `supportedOperations`로 확인.
+### 9.2. 서브그룹(Subgroup) 연산
+- 워크그룹보다 작은 하드웨어 실행 단위(NVIDIA 32 스레드 Warp, AMD 32/64 스레드 Wavefront)를 제어한다.
+- 같은 서브그룹 내의 인보케이션들은 SIMD/SIMT 하드웨어 특성상 락스텝(lockstep)으로 실행되므로, 온칩 공유 메모리나 워크그룹 배리어 없이도 서브그룹 레벨 셔플, 밸럿(Ballot), 리덕션 연산을 매우 낮은 오버헤드로 수행할 수 있다.
+- `subgroupBallot()`, `subgroupAdd()`, `subgroupShuffle()` 등은 Vulkan 1.1 코어(`VK_SUBGROUP_FEATURE_BALLOT/ARITHMETIC/SHUFFLE_BIT`)에서 지원한다. `VK_KHR_shader_subgroup_extended_types`(1.2 코어)는 이들 연산에 8/16비트 정수·16비트 부동소수점 **타입**을 추가로 허용하는 확장이다.
+- 디바이스 지원 정보는 `VkPhysicalDeviceSubgroupProperties`를 통해 조회한다.
 
-### 9.3. `VK_KHR_compute_shader_derivatives`
-- 컴퓨트 셰이더에서 `dFdx` / `dFdy` 등 그래픽스 전용 함수 사용 가능.
+### 9.3. `VK_KHR_compute_shader_derivatives` (Vulkan 1.3 코어 지원 확장)
+- 프래그먼트 셰이더 전용이었던 편미분 함수(`dFdx`, `dFdy`, `fwidth` 등)를 컴퓨트 셰이더의 $2 \times 2$ 쿼드 영역 내에서 호출할 수 있게 해 준다.
 
-### 9.4. `VK_EXT_inline_uniform_block` (Vulkan 1.3 core 승격)
-- 인라인 유니폼 블록: 작은 상수 데이터를 별도 버퍼 없이 전달.
-
-### 9.5. Pipeline Binary / Pipeline Cache
-- 그래픽스 파이프라인과 마찬가지로, `VkPipelineCache`로 컴퓨트 파이프라인 컴파일 결과도 캐싱 가능.
-
-```c
-vkCreateComputePipelines(device, pipelineCache, 1, &compCI, nullptr, &pipeline);
-```
+### 9.4. `VK_EXT_inline_uniform_block` (Vulkan 1.3 코어)
+- 별도의 버퍼 할당 없이 디스크립터 세트 내부 메모리에 직접 작은 인라인 유니폼 데이터를 주입할 수 있다.
 
 ---
 
-## 10. 실전 예제: Float 배열 병렬 곱셈
+## 10. 실전 예제: 배열 요소 병렬 곱셈
 
-```c
-// GLSL: each thread = 1 float
+```glsl
+#version 460
 layout(local_size_x = 256) in;
-layout(set = 0, binding = 0) readonly buffer Input  { float data[]; } inBuf;
-layout(set = 0, binding = 1) buffer Output { float data[]; } outBuf;
-layout(push_constant) uniform PC { uint count; float multiplier; } pc;
+
+layout(set = 0, binding = 0) readonly buffer InputBuffer {
+    float inData[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer {
+    float outData[];
+};
+
+layout(push_constant) uniform Constants {
+    uint count;
+    float multiplier;
+} pc;
 
 void main() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx < pc.count) {
-        outBuf.data[idx] = inBuf.data[idx] * pc.multiplier;
+        outData[idx] = inData[idx] * pc.multiplier;
     }
 }
 ```
 
 ```c
-// Push constant 구조체 정의 (셰이더와 일치)
+// 호스트 애플리케이션 실행 코드
 struct PushConstants {
     uint32_t count;
     float multiplier;
-};
-
-// Host 측
-VkPipeline computePipeline;
-VkPipelineLayout pipelineLayout;
-VkDescriptorSet descriptorSet;
-
-// ... 생성 (위 코드 참고)
-
-VkCommandBuffer cmd; // 외부에서 생성됨
+} pcData = { 1024, 2.5f };
 
 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
     0, 1, &descriptorSet, 0, nullptr);
-
-PushConstants pc{};
-pc.count = 1024;
-pc.multiplier = 2.0f;
-
 vkCmdPushConstants(cmd, pipelineLayout,
-    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &pc);
+    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstants), &pcData);
 
-uint32_t groupCount = (pc.count + 255) / 256;
-vkCmdDispatch(cmd, groupCount, 1, 1);
+uint32_t workgroupCount = (pcData.count + 255) / 256;
+vkCmdDispatch(cmd, workgroupCount, 1, 1);
 ```
 
 ---
 
-## 11. 컴퓨트 파이프라인이 사용되는 주요 분야
+## 11. 주요 적용 분야
 
-| 분야 | 설명 |
-|------|------|
-| **Post-processing** | Bloom, blur, tone mapping, color grading |
-| **Particle systems** | 위치/속도 업데이트 |
-| **Physics** | 충돌 검사, cloth simulation, fluid simulation |
-| **Lighting** | Tiled/Clustered light culling, DDGI, Voxel GI |
-| **Animation** | Skinning, morph target, GPU deform |
-| **Compute-based Rendering** | GPU-driven culling, indirect draw argument 생성 |
-| **AI/ML** | Inference (Vulkan이 TensorRT 대체는 못 하지만 간단한 ML 연산 가능) |
+| 분야 | 활용 방식 |
+|------|-----------|
+| **포스트 프로세싱** | 톤 매핑, 블룸(Bloom), 블러(Blur), 피사계 심도(DoF) |
+| **파티클 시뮬레이션** | 대규모 파티클 위치, 속도 갱신, 물리 감쇠 연산 |
+| **물리 엔진** | 강체 충돌 검사, 천(Cloth) 시뮬레이션, 유체(SPH) 계산 |
+| **조명 및 렌더링** | 타일드/클러스터드 라이트 컬링, 복셀 기반 글로벌 일루미네이션(VXGI) |
+| **캐릭터 애니메이션** | GPU 스키닝(Skinning), 블렌드 셰이프 모핑(Morph Target) |
+| **GPU-Driven 렌더링** | GPU 절두체/오클루전 컬링, 인다이렉트 드로우 인자 생성 |
+| **경량 ML/AI 추론** | 온디바이스 신경망 추론 연산 |

@@ -112,7 +112,7 @@
         },
         {
           "slug": "sparse-resources",
-          "title": "Sparse Resources",
+          "title": "스파스 리소스 (Sparse Resources)",
           "summary": "SPARSE_BINDING · Residency · Mip-tail · vkQueueBindSparse",
           "icon": "▩"
         },
@@ -136,7 +136,7 @@
         },
         {
           "slug": "wsi-surface",
-          "title": "Windowing / Surface",
+          "title": "Windowing / Surface (WSI)",
           "summary": "VK_KHR_surface · Win32/XCB/Wayland · VK_KHR_headless_surface",
           "icon": "▢"
         },
@@ -160,7 +160,7 @@
       "topics": [
         {
           "slug": "synchronization",
-          "title": "동기화 전체",
+          "title": "동기화 (Synchronization)",
           "summary": "Fence · Semaphore · Event · Pipeline Barrier",
           "icon": "⟳"
         }

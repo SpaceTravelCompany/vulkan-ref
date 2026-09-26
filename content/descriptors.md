@@ -3,34 +3,33 @@ title: Descriptor & Layout
 slug: descriptors
 ---
 
-## 왜 Descriptor가 필요한가?
+## 소개
 
-셰이더는 버퍼, 이미지, 샘플러 같은 리소스에 접근해야 한다. 그런데 Vulkan에서는 "이 버퍼를 써"라고 직접 주소값을 넘기지 않는다. 대신 **Descriptor**라는 "중간 테이블"을 거친다.
+디스크립터(Descriptor)는 셰이더가 버퍼, 텍스처 이미지, 샘플러 등의 GPU 리소스에 간접적으로 접근할 수 있도록 연결하는 핸들이다. Vulkan은 셰이더에 리소스의 가상 주소를 직접 하드코딩하지 않고 디스크립터라는 불투명 핸들을 거치게 함으로써 다음과 같은 이점을 제공한다.
 
-이 방식의 장점:
-- **유연성**: 같은 셰이더라도 Descriptor만 바꾸면 다른 리소스를 쓸 수 있다
-- **안전성**: GPU가 접근 가능한 리소스를 명시적으로 관리
-- **성능**: 드라이버가 미리 바인딩 정보를 알고 있어서 최적화 가능
+- **유연성**: 셰이더를 재컴파일하지 않고 디스크립터 세트만 교체하여 서로 다른 텍스처나 버퍼를 바인딩한다.
+- **안전성**: GPU가 접근 가능한 리소스의 범위와 셰이더 스테이지별 가시성을 명시적으로 제어한다.
+- **최적화**: 드라이버가 파이프라인 생성 시점에 리소스 바인딩 구조를 파악하여 하드웨어 파이프라인을 최적화한다.
 
 ---
 
-## 1. 큰 그림
+## 1. 전체 구조 및 리소스 흐름
 
 ```flowchart
 flowchart TD
-  A["VkDescriptorSetLayout — 이런 바인딩이 필요하다"]
-  B["binding 0: uniform buffer (vertex shader)"]
-  C["binding 1: combined image sampler (frag)"]
-  D["VkPipelineLayout — 파이프라인에 이 layout을 쓴다"]
-  E["set 0 layout: 위의 DescriptorSetLayout"]
-  F["set 1 layout: 다른 DescriptorSetLayout"]
+  A["VkDescriptorSetLayout — 리소스 바인딩 규격 정의"]
+  B["binding 0: uniform buffer (vertex)"]
+  C["binding 1: combined image sampler (fragment)"]
+  D["VkPipelineLayout — 파이프라인에 바인딩할 레이아웃 집합"]
+  E["set 0: 위의 DescriptorSetLayout"]
+  F["set 1: 머티리얼 전용 DescriptorSetLayout"]
   G["push constant range"]
-  H["VkPipeline — 셰이더 코드에서 binding 접근 · 파이프라인 생성 시 넘김"]
-  I["VkDescriptorPool — descriptor를 할당할 풀"]
-  J["VkDescriptorSet — 실제 GPU 리소스를 담은 set"]
+  H["VkPipeline — 파이프라인 생성 시 파이프라인 레이아웃 등록"]
+  I["VkDescriptorPool — 디스크립터 메모리 풀"]
+  J["VkDescriptorSet — 실제 GPU 리소스를 가리키는 세트"]
   K["binding 0: 특정 VkBuffer + offset"]
   L["binding 1: 특정 VkImageView + VkSampler"]
-  M(["vkCmdBindDescriptorSets() — 드로우 시 전달"])
+  M(["vkCmdBindDescriptorSets() — 드로우 호출 전 바인딩"])
   A --> B
   A --> C
   A --> D
@@ -45,311 +44,302 @@ flowchart TD
   J --> M
 ```
 
-결국 순서는 다음과 같다:
+**디스크립터 파이프라인 순서:**
 
-1. **Layout 정의**: 셰이더가 "어떤 종류의 리소스를 몇 개, 어느 스테이지에서 쓸지"를 레이아웃으로 정의
-2. **Pool 생성**: 실제 descriptor 메모리를 풀에서 할당
-3. **Set 할당**: Layout을 기반으로 실제 descriptor set을 할당
-4. **Set 업데이트**: 할당된 set에 실제 buffer/image/sampler를 연결
-5. **Set 바인딩**: 드로우/디스패치 전에 set을 파이프라인에 바인딩
+1. **레이아웃 정의**: 셰이더가 사용할 리소스 종류, 바인딩 번호, 대상 스테이지를 `VkDescriptorSetLayout`으로 선언.
+2. **파이프라인 레이아웃 생성**: 여러 세트 레이아웃과 푸시 상수 범위를 묶어 `VkPipelineLayout` 생성.
+3. **풀 생성**: 디스크립터 세트가 소비할 슬롯 메모리를 `VkDescriptorPool`에 사전 할당.
+4. **세트 할당 및 갱신**: 풀에서 `VkDescriptorSet`을 할당한 뒤 실제 버퍼/이미지 정보를 `vkUpdateDescriptorSets`로 연결.
+5. **커맨드 버퍼 바인딩**: 드로우나 디스패치 명령 전에 `vkCmdBindDescriptorSets`로 세트를 파이프라인에 연결.
 
 ---
 
-## 2. VkDescriptorSetLayout ("어떤 바인딩이 필요한가")
+## 2. `VkDescriptorSetLayout` — 바인딩 구조 정의
 
-셰이더에서 사용하는 변수들을 **binding point** 단위로 정의한다.
-
-> **초보자 용어**: **Binding Point** = 셰이더에서 리소스에 접근하는 "슬롯 번호". `layout(binding = 0)`이면 0번 슬롯에 연결된 리소스를 쓴다는 뜻.
-
-예를 들어 다음과 같은 GLSL 셰이더가 있다고 가정하자:
+셰이더 내부의 `layout(binding = N)` 선언과 C++ 코드의 레이아웃 바인딩을 일치시켜야 한다.
 
 ```glsl
-// vertex shader
-layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
+// 버텍스 셰이더
+layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
-} ubo;
+} camera;
 
-// fragment shader
-layout(set = 0, binding = 1) uniform sampler2D texSampler;
-layout(set = 0, binding = 2) uniform UniformFragment {
-    vec4 color;
-} uboFrag;
+// 프래그먼트 셰이더
+layout(set = 0, binding = 1) uniform sampler2D diffuseMap;
+layout(set = 0, binding = 2) uniform MaterialUBO {
+    vec4 baseColor;
+} material;
 ```
 
-이에 대응하는 C 레이아웃:
+위 셰이더에 대응하는 `VkDescriptorSetLayout` 생성 코드:
 
 ```c
 VkDescriptorSetLayoutBinding bindings[3] = {};
 
-// binding 0: UBO (vertex shader)
-bindings[0].binding = 0;
-bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+// binding 0: 카메라 UBO (버텍스 셰이더)
+bindings[0].binding         = 0;
+bindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 bindings[0].descriptorCount = 1;
-bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+bindings[0].stageFlags      = VK_SHADER_STAGE_VERTEX_BIT;
 
-// binding 1: combined image sampler (fragment shader)
-bindings[1].binding = 1;
-bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+// binding 1: 결합 이미지 샘플러 (프래그먼트 셰이더)
+bindings[1].binding         = 1;
+bindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 bindings[1].descriptorCount = 1;
-bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+bindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-// binding 2: UBO (fragment shader)
-bindings[2].binding = 2;
-bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+// binding 2: 머티리얼 UBO (프래그먼트 셰이더)
+bindings[2].binding         = 2;
+bindings[2].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 bindings[2].descriptorCount = 1;
-bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+bindings[2].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-VkDescriptorSetLayoutCreateInfo dslCI{};
-dslCI.bindingCount = 3;
-dslCI.pBindings = bindings;
-vkCreateDescriptorSetLayout(device, &dslCI, nullptr, &descriptorSetLayout);
+VkDescriptorSetLayoutCreateInfo layoutCI{};
+layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+layoutCI.bindingCount = 3;
+layoutCI.pBindings    = bindings;
+
+VkDescriptorSetLayout descriptorSetLayout;
+vkCreateDescriptorSetLayout(device, &layoutCI, nullptr, &descriptorSetLayout);
 ```
 
-**핵심 파라미터:**
-
-- `binding`: 셰이더 layout과 일치해야 함
-- `descriptorType`: UBO, SSBO, CombinedImageSampler, StorageImage 등
-- `descriptorCount`: 배열이면 개수
-- `stageFlags`: 어느 셰이더 스테이지에서 접근하는지. 같은 binding을 여러 스테이지가 공유할 수 있음
-
-**Vulkan 1.2 / VK_EXT_descriptor_indexing**부터는 **Update-After-Bind**와 **Partially-Bound** 등이 추가되어, 레이아웃을 더 유연하게 구성할 수 있다.
-
-> **관련 문서** — descriptor pool 없이 `VkBuffer`에 직접 기록하는 `VK_EXT_descriptor_buffer`는 `uniform-and-storage-buffers` 토픽 §11 참고.
+**주요 필드 규격:**
+- `binding`: 셰이더의 `binding = N` 번호와 일치해야 한다.
+- `descriptorType`: UBO, SSBO, CombinedImageSampler, StorageImage 등 리소스 성격 지정.
+- `descriptorCount`: 단일 리소스는 1, 텍스처 배열이나 런타임 배열은 해당 원소 수 지정.
+- `stageFlags`: 리소스에 접근하는 셰이더 스테이지 마스크. 버텍스와 프래그먼트에서 동시 접근 시 비트 플래그를 결합한다.
 
 ---
 
-## 3. VkPipelineLayout ("파이프라인에 layout 연결")
+## 3. `VkPipelineLayout` — 파이프라인 인터페이스 구성
 
-파이프라인을 생성할 때, 어떤 descriptor set layout을 사용할지 전달한다.
-
-> **용도** 파이프라인은 "이 셰이더를 쓸 건데, 이런 레이아웃으로 리소스를 넘길 거야"라고 미리 선언하는 것이다. GPU는 이 정보를 보고 셰이더 컴파일 최적화를 진행한다.
+파이프라인 생성 시 해당 파이프라인이 소비할 디스크립터 세트 레이아웃들과 푸시 상수의 범위를 선언한다.
 
 ```c
-VkPipelineLayoutCreateInfo plCI{};
-plCI.setLayoutCount = 1;
-plCI.pSetLayouts = &descriptorSetLayout;  // 위에서 만든 layout
+VkPipelineLayoutCreateInfo pipelineLayoutCI{};
+pipelineLayoutCI.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+pipelineLayoutCI.setLayoutCount = 1;
+pipelineLayoutCI.pSetLayouts    = &descriptorSetLayout;
 
-// push constant도 여기서 정의
+// 푸시 상수 범위 선언 (선택 사항)
 VkPushConstantRange pushConstant{};
 pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-pushConstant.offset = 0;
-pushConstant.size = sizeof(PushConstants);
-plCI.pushConstantRangeCount = 1;
-plCI.pPushConstantRanges = &pushConstant;
+pushConstant.offset     = 0;
+pushConstant.size       = sizeof(glm::mat4);
+pipelineLayoutCI.pushConstantRangeCount = 1;
+pipelineLayoutCI.pPushConstantRanges    = &pushConstant;
 
-vkCreatePipelineLayout(device, &plCI, nullptr, &pipelineLayout);
+VkPipelineLayout pipelineLayout;
+vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout);
 ```
 
-**제약 (스펙 발췌):**
-
-- `setLayoutCount` ≤ `VkPhysicalDeviceLimits::maxBoundDescriptorSets` (보통 4~8)
-- 각 스테이지별 sampler/UBO/SSBO/StorageImage 개수는 `maxPerStageDescriptor*` 한도를 초과할 수 없음
-- 연결된 모든 set layout의 **binding 번호가 중복되어선 안 됨** (set 간에는 중복 가능)
-
-**set layout과 pipeline layout의 관계:**
-
-- DescriptorSetLayout은 "binding 구조"만 정의한다. 어떤 VkBuffer/VkImageView를 연결할지는 나중에 descriptor set에서 결정한다.
-- PipelineLayout은 "파이프라인이 이 layout들을 사용한다"고 등록하는 역할이다.
-- 하나의 DescriptorSetLayout을 여러 PipelineLayout에서 재사용할 수 있다.
+**스펙 제약 사항:**
+- `setLayoutCount`는 하드웨어 한계인 `VkPhysicalDeviceLimits::maxBoundDescriptorSets`(통상 4~8) 이하여야 한다.
+- 각 파이프라인 스테이지에서 동시에 사용하는 디스크립터 개수는 `maxPerStageDescriptor*` 한도를 초과할 수 없다.
+- 서로 다른 파이프라인 레이아웃이라도 디스크립터 세트 레이아웃 객체 자체는 재사용할 수 있다.
 
 ---
 
-## 4. VkDescriptorPool ("descriptor 메모리")
+## 4. `VkDescriptorPool` — 디스크립터 메모리 관리
 
-실제 descriptor set을 할당하려면 먼저 descriptor pool이 필요하다.
-
-Descriptor Pool은 descriptor set이 사용할 **descriptor 저장 공간을 미리 확보한 할당 풀**이다. `maxSets`로 만들 수 있는 set 개수를 정하고, `VkDescriptorPoolSize`로 set 내부에 들어갈 descriptor 타입별 총량을 잡아둔다. Descriptor Set은 그 pool에서 할당된 실제 바인딩 묶음이다.
+디스크립터 세트를 할당하려면 해당 디스크립터들을 담을 풀을 먼저 생성해야 한다. 풀 생성 시 최대 세트 수(`maxSets`)와 디스크립터 타입별 총 필요 개수(`VkDescriptorPoolSize`)를 사전에 선언한다.
 
 ```c
 VkDescriptorPoolSize poolSizes[2] = {};
-poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-poolSizes[0].descriptorCount = 3;     // UBO 3개를 할당할 수 있어야 함
-poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-poolSizes[1].descriptorCount = 1;
+poolSizes[0].type            = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+poolSizes[0].descriptorCount = 3;  // UBO 총 3개 수용
+poolSizes[1].type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+poolSizes[1].descriptorCount = 1;  // 텍스처 샘플러 1개 수용
 
 VkDescriptorPoolCreateInfo poolCI{};
-poolCI.maxSets = 1;                    // 이 풀에서 최대 1개의 set을 할당
+poolCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+poolCI.maxSets       = 1;  // 이 풀에서 할당할 최대 세트 수
 poolCI.poolSizeCount = 2;
-poolCI.pPoolSizes = poolSizes;
+poolCI.pPoolSizes    = poolSizes;
+
+VkDescriptorPool descriptorPool;
 vkCreateDescriptorPool(device, &poolCI, nullptr, &descriptorPool);
 ```
 
-**팁:**
-
-- 프레임당 별도 pool = `vkResetDescriptorPool()`로 쉽게 리셋 가능 (별도 플래그 불필요)
-- 개별 descriptor set을 `vkFreeDescriptorSets()`로 해제하려면 `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT` 필요
-- 대량 할당은 pool 하나에 몰아서 = `vkResetDescriptorPool`로 한 번에 리셋
-- `VkPhysicalDeviceLimits::maxDescriptorSet*` 시리즈 제한 확인 필수
+**풀 관리 핵심 규칙:**
+- **일괄 리셋**: 프레임 단위로 디스크립터를 생성하는 경우 `vkResetDescriptorPool`을 호출하여 풀 전체를 한 번에 초기화하는 방식이 가장 효율적이다.
+- **개별 해제**: `vkFreeDescriptorSets`로 특정 세트만 개별 해제하려면 풀 생성 플래그에 `VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT`를 반드시 지정해야 한다. 플래그가 없으면 개별 해제가 금지되며 풀 리셋이나 풀 파괴 시에만 메모리가 회수된다.
+- 풀이 파괴되면 해당 풀에서 할당된 모든 디스크립터 세트는 자동으로 무효화된다.
+- **한도 확인**: `VkPhysicalDeviceLimits::maxDescriptorSet*` 시리즈(`maxDescriptorSetUniformBuffers`, `maxDescriptorSetSampledImages` 등)를 확인하여 풀 크기가 디바이스 한도를 초과하지 않도록 해야 한다.
 
 ---
 
-## 5. VkDescriptorSet ("실제 리소스 연결")
+## 5. `VkDescriptorSet` — 할당 및 리소스 바인딩
 
-pool에서 set을 할당하고, 실제 리소스(buffer / image / sampler)를 연결한다.
-
-> **핵심 개념**: Layout이 "어떤 슬롯이 있는지"였다면, Set은 "그 슬롯에 실제로 무엇을 꽂을지"를 정의한다. 같은 Layout으로 여러 Set을 만들어서, 드로우마다 Set만 바꿔 끼울 수 있다.
+풀에서 세트를 할당받고, 실제 GPU 리소스 핸들(`VkBuffer`, `VkImageView`, `VkSampler`)을 세트의 슬롯에 기록한다.
 
 ```c
-// 할당
+// 1. 디스크립터 세트 할당
 VkDescriptorSetAllocateInfo allocInfo{};
-allocInfo.descriptorPool = descriptorPool;
+allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+allocInfo.descriptorPool     = descriptorPool;
 allocInfo.descriptorSetCount = 1;
-allocInfo.pSetLayouts = &descriptorSetLayout;
+allocInfo.pSetLayouts        = &descriptorSetLayout;
+
+VkDescriptorSet descriptorSet;
 vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
 
-// 업데이트: UBO 연결
+// 2. 바인딩 0: UBO 버퍼 정보 설정
 VkDescriptorBufferInfo bufferInfo{};
 bufferInfo.buffer = uniformBuffer;
 bufferInfo.offset = 0;
-bufferInfo.range = sizeof(UniformBufferObject);
+bufferInfo.range  = sizeof(CameraUBO);
 
 VkWriteDescriptorSet writeUBO{};
-writeUBO.dstSet = descriptorSet;
-writeUBO.dstBinding = 0;
+writeUBO.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+writeUBO.dstSet          = descriptorSet;
+writeUBO.dstBinding      = 0;
 writeUBO.descriptorCount = 1;
-writeUBO.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-writeUBO.pBufferInfo = &bufferInfo;
+writeUBO.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+writeUBO.pBufferInfo     = &bufferInfo;
 
-// 업데이트: sampler + image view 연결 (combined image sampler)
+// 3. 바인딩 1: 텍스처 및 샘플러 정보 설정
 VkDescriptorImageInfo imageInfo{};
 imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-imageInfo.imageView = textureImageView;
-imageInfo.sampler = textureSampler;
+imageInfo.imageView   = textureImageView;
+imageInfo.sampler     = textureSampler;
 
 VkWriteDescriptorSet writeSampler{};
-writeSampler.dstSet = descriptorSet;
-writeSampler.dstBinding = 1;
+writeSampler.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+writeSampler.dstSet          = descriptorSet;
+writeSampler.dstBinding      = 1;
 writeSampler.descriptorCount = 1;
-writeSampler.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-writeSampler.pImageInfo = &imageInfo;
+writeSampler.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+writeSampler.pImageInfo      = &imageInfo;
 
-// 한 번에 적용
+// 4. 일괄 업데이트 호출
 VkWriteDescriptorSet writes[] = { writeUBO, writeSampler };
 vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 ```
 
-**주의:** `vkUpdateDescriptorSets`는 **pool이 externally synchronized**되어야 하므로, 여러 스레드에서 같은 pool의 set을 동시에 업데이트하면 안 된다.
+> **스레드 안전성 주의** `vkAllocateDescriptorSets`, `vkFreeDescriptorSets`, `vkResetDescriptorPool`은 동일한 풀 객체에 대해 외부 동기화(External Synchronization)를 요구한다. 멀티스레드 환경에서는 스레드마다 별도의 풀을 두거나 락으로 보호해야 한다.
 
 ---
 
-## 6. 바인딩과 드로우
+## 6. 파이프라인 바인딩 및 렌더링
 
-이제 실제로 그릴 때 Descriptor Set을 파이프라인에 연결한다.
-
-```c
-// 그리기 전에 descriptor set을 바인딩
-vkCmdBindDescriptorSets(cmdBuffer,
-    VK_PIPELINE_BIND_POINT_GRAPHICS, // graphics or compute
-    pipelineLayout,                   // 어떤 pipeline layout과 연결된 set인지
-    0,                                // firstSet: set 0부터
-    1,                                // descriptorSetCount
-    &descriptorSet,                   // 실제 set
-    0, nullptr);                      // dynamic offset
-
-vkCmdDraw(cmdBuffer, vertexCount, 1, 0, 0);
-```
-
-여러 set을 사용하는 경우 `firstSet`으로 시작 set 번호를 지정한다.
-
----
-
-## 7. 여러 Set / 여러 Binding 예제
+커맨드 버퍼에 렌더링 명령을 기록할 때 파이프라인 레이아웃과 디스크립터 세트를 연결한다.
 
 ```c
-// 셰이더 측
-layout(set = 0, binding = 0) uniform sampler2D gBufferColor;
-layout(set = 1, binding = 0) uniform sampler2D gBufferNormal;
-layout(set = 1, binding = 1) uniform LightBlock { vec4 lights[64]; };
+vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-// C++ 측: set 0과 set 1을 각각 만들고, 한 번에 바인딩
-VkDescriptorSet sets[] = { gbufferSet, lightingSet };
-vkCmdBindDescriptorSets(cmdBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-    pipelineLayout, 0, 2, sets, 0, nullptr);
+// 디스크립터 세트 바인딩
+vkCmdBindDescriptorSets(cmd,
+    VK_PIPELINE_BIND_POINT_GRAPHICS,
+    pipelineLayout,
+    0,               // firstSet: 0번 세트부터 바인딩
+    1,               // descriptorSetCount
+    &descriptorSet,  // 바인딩할 세트 배열
+    0, nullptr);     // 동적 오프셋(Dynamic Offset) 없음
+
+vkCmdDraw(cmd, vertexCount, 1, 0, 0);
 ```
 
 ---
 
-## 8. Update-After-Bind (Vulkan 1.2 / VK_EXT_descriptor_indexing)
+## 7. 다중 세트 분리 패턴
 
-기본 규칙은 "bind 이후 업데이트가 조용히 무시된다"가 아니다. 일반 descriptor binding에서는 command buffer에 set을 bind한 뒤 그 set의 descriptor를 다시 쓰면, 이미 기록된 command buffer가 invalid 될 수 있고 GPU가 아직 쓰는 중인 set도 건드리면 안 된다.
+렌더링 파이프라인의 갱신 주기(Frequency)에 따라 세트를 분리하면 드로우 호출 간 불필요한 상태 갱신을 최소화할 수 있다.
 
-그래서 기본 모델은 이렇게 생각하면 된다:
+```glsl
+// set 0: 프레임 전역 데이터 (카메라, 환경광 등 - 프레임당 1회 바인딩)
+layout(set = 0, binding = 0) uniform FrameData { mat4 viewProj; } frame;
 
-- `vkCmdBindDescriptorSets`로 set을 command buffer에 기록한다
-- 그 command buffer가 실행을 끝낼 때까지, 해당 set의 descriptor 내용은 고정된 것으로 취급한다
-- 다른 리소스로 바꾸고 싶으면 보통 다른 descriptor set을 쓰거나, GPU 사용이 끝난 뒤 업데이트한다
+// set 1: 머티리얼별 텍스처 (머티리얼 전환 시 바인딩)
+layout(set = 1, binding = 0) uniform sampler2D diffuseTex;
 
-> **헷갈리기 쉬운 점** 여기서 말하는 업데이트는 `VkBuffer`, `VkImageView`, `VkSampler` 같은 descriptor 슬롯의 연결 대상을 바꾸는 것이다. 이미 연결된 buffer 안의 데이터를 mapped memory나 copy 명령으로 바꾸는 건 별도의 메모리 동기화 문제다.
+// set 2: 오브젝트별 동적 데이터 (오브젝트마다 바인딩)
+layout(set = 2, binding = 0) uniform ObjectData { mat4 model; } object;
+```
 
-`Update-After-Bind`는 이 규칙을 완화하는 옵션이다. 해당 binding에 `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`를 주면, set을 command buffer에 bind한 뒤 submit 전에 descriptor를 다시 써도 command buffer가 invalid 되지 않고, submit 시점에는 가장 최근에 쓴 descriptor가 사용된다.
+```c
+// 프레임 시작 시 전역 세트 1회 바인딩
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &frameSet, 0, nullptr);
 
-설정은 네 군데가 맞아야 한다:
+// 머티리얼 변경 시
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &materialSet, 0, nullptr);
 
-- 디바이스 feature: descriptor 타입에 맞는 `descriptorBinding*UpdateAfterBind` 활성화
-- set layout: `VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT`
-- binding flag: `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`
-- descriptor pool: `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT`
+// 드로우마다 오브젝트 세트 교체
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1, &objectSet, 0, nullptr);
+vkCmdDraw(cmd, ...);
+```
+
+---
+
+## 8. Update-After-Bind (`VK_EXT_descriptor_indexing`, Vulkan 1.2 코어)
+
+기본 모델에서는 커맨드 버퍼에 `vkCmdBindDescriptorSets`를 기록한 이후 해당 디스크립터 세트의 내용을 수정하면 이미 기록된 커맨드 버퍼가 무효화되거나 GPU 실행 중 데이터 경합이 발생한다.
+
+**Update-After-Bind** 플래그를 설정하면 커맨드 버퍼 기록 후 큐 제출 전까지 디스크립터 슬롯의 내용을 갱신할 수 있으며, 제출 시점의 최신 상태가 GPU에 반영된다. 이를 통해 거대한 텍스처 배열을 미리 등록해 두고 인덱스로 접근하는 바인드리스(Bindless) 렌더링을 구현할 수 있다.
+
+**필수 활성화 항목 (4단계):**
+
+1. **디바이스 기능**: `VkPhysicalDeviceDescriptorIndexingFeatures`에서 해당 디스크립터 타입의 `descriptorBinding*UpdateAfterBind` 활성화.
+2. **세트 레이아웃 플래그**: `VkDescriptorSetLayoutCreateInfo::flags`에 `VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT` 지정.
+3. **바인딩 플래그**: `VkDescriptorSetLayoutBindingFlagsCreateInfo`의 pNext 체인을 통해 해당 바인딩에 `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT` 지정.
+4. **풀 플래그**: `VkDescriptorPoolCreateInfo::flags`에 `VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT` 지정.
 
 ```c
 VkDescriptorSetLayoutBinding binding{};
-binding.binding = 0;
-binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-binding.descriptorCount = 1024;
-binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+binding.binding         = 0;
+binding.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+binding.descriptorCount = 1024;  // 거대 텍스처 배열
+binding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-VkDescriptorBindingFlags bindingFlags[] = {
-    VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT,
-};
+VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+                               | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
 
-VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsCI{};
-bindingFlagsCI.sType =
-    VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-bindingFlagsCI.bindingCount = 1;
-bindingFlagsCI.pBindingFlags = bindingFlags;
+VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI{};
+flagsCI.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+flagsCI.bindingCount  = 1;
+flagsCI.pBindingFlags = &flags;
 
-// layout 생성 시 update-after-bind pool flag와 binding flag를 같이 설정
-VkDescriptorSetLayoutCreateInfo dslCI{};
-dslCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-dslCI.pNext = &bindingFlagsCI;
-dslCI.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
-dslCI.bindingCount = 1;
-dslCI.pBindings = &binding;
+VkDescriptorSetLayoutCreateInfo layoutCI{};
+layoutCI.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+layoutCI.pNext        = &flagsCI;
+layoutCI.flags        = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+layoutCI.bindingCount = 1;
+layoutCI.pBindings    = &binding;
 
-// pool 생성 시에도 update-after-bind flag 설정
-VkDescriptorPoolCreateInfo poolCI{};
-poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-poolCI.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+VkDescriptorSetLayout bindlessLayout;
+vkCreateDescriptorSetLayout(device, &layoutCI, nullptr, &bindlessLayout);
 ```
 
-이를 사용하면 매번 새 set을 할당하지 않고, 큰 descriptor 배열의 일부 슬롯만 나중에 채우거나 교체하는 바인드리스 패턴을 만들 수 있다. 단, GPU가 이미 실행 중인 작업에서 같은 descriptor를 읽고 있을 수 있으므로 frame-in-flight, fence, timeline semaphore 같은 동기화 설계는 여전히 필요하다. 드라이버가 더 유연한 descriptor 추적을 해야 해서 성능 trade-off도 생길 수 있다.
+> [!NOTE]
+> 여기서 말하는 "갱신"은 `VkBuffer`, `VkImageView`, `VkSampler` 등 디스크립터 슬롯의 **연결 대상**을 바꾸는 것이다. 이미 연결된 버퍼 내부 데이터를 `vkMapMemory`나 복사 명령으로 수정하는 것은 별도의 메모리 동기화 문제이며, 디스크립터 갱신과 무관하다.
+
+> [!WARNING]
+> Update-After-Bind를 사용하면 드라이버가 더 유연한 디스크립터 추적을 수행해야 하므로 **성능 trade-off**가 발생할 수 있다. 바인드리스 패턴의 편의성과 GPU 오버헤드를 비교하여 도입 여부를 판단해야 한다.
 
 ---
 
-## 9. Descriptor Set Layout의 재사용
+## 9. Descriptor Set Layout 재사용
 
-동일한 layout을 공유하는 여러 descriptor set을 만들 수 있다. 예를 들어:
+동일한 레이아웃을 공유하는 여러 디스크립터 세트를 만들 수 있다. 예를 들어 머티리얼마다 다른 텍스처를 바인딩하지만 레이아웃 구조(UBO 1개 + 샘플러 1개)가 동일한 경우, 하나의 `VkDescriptorSetLayout`으로 여러 세트를 할당하고 드로우 호출 시 세트만 교체하면 된다.
 
 ```c
-// 하나의 layout으로 여러 UBO + 텍스처 조합을 만듦
-VkDescriptorSetLayout sameLayout;
-vkCreateDescriptorSetLayout(device, &dslCI, nullptr, &sameLayout);
-
-// 객체 A (layout 기반으로 set 할당)
-VkDescriptorSet setA;
+// 하나의 layout으로 여러 세트 할당
 allocInfo.pSetLayouts = &sameLayout;
 vkAllocateDescriptorSets(device, &allocInfo, &setA);
-// setA에 객체 A의 buffer 연결
+// setA에 객체 A의 버퍼/텍스처 연결
 
-// 객체 B (같은 layout)
-VkDescriptorSet setB;
 vkAllocateDescriptorSets(device, &allocInfo, &setB);
-// setB에 객체 B의 buffer 연결
+// setB에 객체 B의 버퍼/텍스처 연결
 
-// 그릴 때마다 set만 교체
-vkCmdBindDescriptorSets(..., 1, &setA, ...);
-vkCmdDraw(...);
-vkCmdBindDescriptorSets(..., 1, &setB, ...);
-vkCmdDraw(...);
+// 드로우 시 세트만 교체
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    pipelineLayout, 0, 1, &setA, 0, nullptr);
+vkCmdDraw(cmd, ...);
+
+vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+    pipelineLayout, 0, 1, &setB, 0, nullptr);
+vkCmdDraw(cmd, ...);
 ```
+
+> **관련 확장**: `VK_EXT_descriptor_buffer`(Vulkan 1.4 코어)는 디스크립터 풀/세트 대신 GPU 메모리 버퍼에 직접 디스크립터를 기록하는 방식이다. `uniform-and-storage-buffers` 토픽 §11 참고.

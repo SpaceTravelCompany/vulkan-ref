@@ -5,102 +5,101 @@ slug: push-constants
 
 ## 소개
 
-Push constant는 **셰이더가 디스크립터나 버퍼 없이 빠르게 읽는 작은 상수**다. `vkCmdPushConstants` 한 번 호출로 GPU 내부 레지스터에 값이 박혀 셰이더의 `layout(push_constant) uniform ...`로 즉시 읽힌다.
+푸시 상수(Push Constants)는 별도의 디스크립터 세트나 버퍼 바인딩 없이 셰이더에 소량의 균일(Uniform) 데이터를 빠르게 주입하는 메커니즘이다. `vkCmdPushConstants` 호출을 통해 커맨드 버퍼에 데이터를 직접 기록하며, GPU 내부 고속 레지스터를 거쳐 셰이더의 `layout(push_constant)` 블록으로 전달된다.
 
 > **용어 정리**
-> - **Push Constant Range**: 파이프라인 레이아웃이 정의한 stageFlags + offset + size 묶음.
-> - **Fast Path**: 메모리 백드 갱신보다 빠른 상수 전달 경로. 디스크립터/UBO보다 빠르고 작은 데이터에 최적.
-> - **maxPushConstantsSize**: 디바이스가 보장하는 push constant 전체 크기 한계 (보통 128~256 바이트).
-> - **Incremental Update**: `vkCmdPushConstants`가 일부 바이트만 갱신 가능. 다른 영역은 이전 값 유지.
+> - **Push Constant Range**: 파이프라인 레이아웃에서 선언하는 스테이지 마스크, 오프셋, 바이트 크기의 묶음(`VkPushConstantRange`).
+> - **Fast Path**: 버퍼 메모리 매핑이나 디스크립터 세트 갱신보다 오버헤드가 적어 더 빠른 데이터 공급 경로(스펙: "expected to outperform").
+> - **maxPushConstantsSize**: 디바이스가 보장하는 푸시 상수 전체 크기 한계(스펙 최소 보장값 128바이트, 일반 외장 GPU는 128~256바이트).
+> - **Incremental Update**: 전체 범위를 매번 덮어쓰지 않고 특정 오프셋의 일부 바이트만 선택적으로 갱신하는 기법.
 
-이 문서는 push constant의 **선언 → 사용 → 갱신** 흐름과 주의사항을 다룬다.
+푸시 상수의 선언, 셰이더 작성, 커맨드 버퍼 기록, 동적 오프셋 UBO와의 차이점을 정리한다.
 
 ---
 
-## 1. 큰 그림
+## 1. 전체 흐름
 
 ```flowchart
 flowchart TD
-  A["파이프라인 레이아웃:"]
-  B["VkPipelineLayoutCreateInfo"]
-  C["pushConstantRangeCount: 1"]
-  D["pPushConstantRanges: [{offset=0, size=32, stageFlags=VS|FS}]"]
-  E["셰이더 (GLSL):"]
-  F["layout(push_constant) uniform PC { mat4 mvp; vec4 color; } pc;"]
-  G["gl_Position = pc.mvp * pos; — 즉시 읽힘, 디스크립터 불필요"]
-  H["매 드로우/디스패치:"]
-  I(["vkCmdBindPipeline(...)"])
-  J(["vkCmdPushConstants(cmd, layout, VS|FS, 0, 32, &data)"])
-  K(["vkCmdDraw(...)"])
-  A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K
+  A["파이프라인 레이아웃 선언:"]
+  B["VkPushConstantRange { offset=0, size=64, stageFlags=VERTEX }"]
+  C["VkPipelineLayout 생성"]
+  D["셰이더 (GLSL):"]
+  E["layout(push_constant) uniform PC { mat4 mvp; } pc;"]
+  F["드로우 명령 기록:"]
+  G(["vkCmdBindPipeline(...)"])
+  H(["vkCmdPushConstants(cmd, layout, stageFlags, offset, size, &data)"])
+  I(["vkCmdDraw(...)"])
+  A --> B --> C
+  C --> D --> E --> F --> G --> H --> I
 ```
 
-**핵심 포인트:**
+**핵심 특징:**
 
-- **메모리 백드 없음**. 디스크립터/UBO/SSBO 없이 셰이더에 직접 주입.
-- **수 KB를 넘어가면 안 됨**. 한계 초과 시 디바이스가 못 만듦.
-- **Incremental update** 가능 — 한 range의 일부 바이트만 갱신해도 나머지는 유지.
+- **버퍼 불필요**: `VkBuffer`나 `VkDeviceMemory` 할당 없이 커맨드 스트림에 값을 직접 포함한다.
+- **크기 제한**: 통상 128~256바이트로 매우 제한적이므로 드로우 단위 MVP 행렬, 틴트 색상, 머티리얼 인덱스 등 필수 데이터만 담아야 한다.
+- **증분 갱신(Incremental Update) 지원**: 동일한 드로우 루프 안에서 특정 멤버(예: 색상)만 부분적으로 갱신하고 나머지(예: 변환 행렬)는 이전 값을 유지할 수 있다.
 
 ---
 
-## 2. 파이프라인 레이아웃에 range 선언
+## 2. 파이프라인 레이아웃 선언
+
+파이프라인 레이아웃 생성 시 사용할 푸시 상수의 오프셋, 크기, 소비 스테이지를 정의한다.
 
 ```c
+// 아래 §4의 PerDrawData 구조체 크기에 맞춰 선언
 VkPushConstantRange pcRange{};
-pcRange.offset   = 0;
-pcRange.size     = 32;                              // 4 바이트 정렬
-pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT
-                   | VK_SHADER_STAGE_FRAGMENT_BIT;
+pcRange.offset     = 0;
+pcRange.size       = sizeof(PerDrawData);  // 반드시 4의 배수
+pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-VkPipelineLayoutCreateInfo plci{};
-plci.setLayoutCount         = 0;                    // 디스크립터 없이도 OK
-plci.pSetLayouts            = nullptr;
-plci.pushConstantRangeCount = 1;
-plci.pPushConstantRanges    = &pcRange;
+VkPipelineLayoutCreateInfo pipelineLayoutCI{};
+pipelineLayoutCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+pipelineLayoutCI.setLayoutCount         = 0;  // 디스크립터 세트가 없어도 무방
+pipelineLayoutCI.pSetLayouts            = nullptr;
+pipelineLayoutCI.pushConstantRangeCount = 1;
+pipelineLayoutCI.pPushConstantRanges    = &pcRange;
 
-VkPipelineLayout layout;
-vkCreatePipelineLayout(device, &plci, nullptr, &layout);
+VkPipelineLayout pipelineLayout;
+vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &pipelineLayout);
 ```
 
-> **스펙 원문** "Push constants represent a high speed path to modify constant data in pipelines that is expected to outperform memory-backed resource updates."
->> 디스크립터/UBO/SSBO보다 빠른 경로. 작은 상수(매트릭스, 색, 시간, 인스턴스 ID)에 최적.
-
-### 2.1. size 한계
-
-`VkPhysicalDeviceLimits::maxPushConstantsSize` (보통 **128 ~ 256 바이트**). 모든 range의 size 합계가 이 값을 넘으면 안 됨. 멀티 range로 분리 가능 (각 range가 겹치지 않게).
-
-> **스펙 원문 (VUID-vkCmdPushConstants-size-00371)** `size` must be less than or equal to `VkPhysicalDeviceLimits::maxPushConstantsSize` minus `offset`.
->> 단일 range의 size도 한계 이내여야 함.
+**크기 및 오프셋 제약 사항:**
+- `offset`과 `size`는 **반드시 4의 배수**여야 한다(VUID-vkCmdPushConstants-offset-00368, size-00369).
+- `offset + size`는 디바이스 한계인 `VkPhysicalDeviceLimits::maxPushConstantsSize`를 초과할 수 없다.
+- 서로 다른 셰이더 스테이지가 각기 다른 오프셋 영역을 사용하도록 다중 범위를 등록할 수 있다.
 
 ---
 
-## 3. 셰이더에서 받기 (SPIR-V / GLSL)
+## 3. 셰이더 인터페이스 (GLSL / SPIR-V)
+
+셰이더 내부에서는 `layout(push_constant)` 한정자를 붙인 익명 또는 명명된 uniform 블록으로 선언한다.
 
 ```glsl
-// GLSL: layout(push_constant) 블록
-layout(push_constant) uniform PerDraw {
-    mat4 mvp;          // 64 바이트
-    vec4 tint;         // 16 바이트
-    uint instanceId;   // 4 바이트
-    uint flags;        // 4 바이트
-    // 총 88 바이트 — 4의 배수
+#version 450
+
+layout(push_constant) uniform PushConstants {
+    mat4 mvp;        // 0..63 바이트
+    vec4 tintColor;  // 64..79 바이트
+    uint objectId;   // 80..83 바이트
+    uint flags;      // 84..87 바이트
 } pc;
+
+layout(location = 0) in vec3 inPosition;
 
 void main() {
     gl_Position = pc.mvp * vec4(inPosition, 1.0);
-    fragColor = pc.tint;
 }
 ```
 
-**규칙:**
-
-- 블록의 총 크기는 **4의 배수** (SPIR-V uniform block 정렬)
-- `offset`, `size` 모두 **4의 배수**여야 함 (VUID-vkCmdPushConstants-offset-00368, size-00369)
-- 16바이트 정렬 멤버(`mat4`, `vec4`)는 자체 정렬 OK
+**메모리 레이아웃 규칙:**
+- 푸시 상수 블록은 기본적으로 std430 정렬 규칙을 따른다.
+- 스칼라는 4바이트, `vec4` 및 `mat4`의 각 열은 16바이트 경계로 정렬된다.
+- C++ 구조체와 셰이더 블록의 패딩이 어긋나지 않도록 멤버 선언 순서와 크기를 주의 깊게 설계해야 한다.
 
 ---
 
-## 4. `vkCmdPushConstants` — 값 갱신
+## 4. `vkCmdPushConstants` — 값 기록
 
 ```c
 void vkCmdPushConstants(
@@ -112,237 +111,143 @@ void vkCmdPushConstants(
     const void*          pValues);
 ```
 
-**전형적 호출:**
+**실제 드로우 기록 예시:**
 
 ```c
-struct PerDrawPC { mat4 mvp; vec4 tint; uint instanceId; uint flags; } pc;
-// ... pc 채우기 ...
-vkCmdPushConstants(cmd, layout,
+struct PerDrawData {
+    glm::mat4 mvp;
+    glm::vec4 tintColor;
+    uint32_t  objectId;
+    uint32_t  flags;
+} pushBlock;
+
+// 데이터 채우기
+pushBlock.mvp       = projection * view * model;
+pushBlock.tintColor = glm::vec4(1.0f, 0.5f, 0.2f, 1.0f);
+pushBlock.objectId  = currentEntityId;
+pushBlock.flags     = 0;
+
+// 푸시 상수 기록 후 드로우
+vkCmdPushConstants(cmd, pipelineLayout,
     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-    0, sizeof(pc), &pc);
+    0, sizeof(PerDrawData), &pushBlock);
+
 vkCmdDraw(cmd, vertexCount, 1, 0, 0);
 ```
 
-### 4.1. Incremental update (부분 갱신)
+### 4.1. 증분 갱신(Incremental Update)
+
+이전 드로우에서 기록한 데이터를 그대로 두고 특정 오프셋 영역만 덮어쓸 수 있다.
 
 ```c
-// mvp만 갱신, tint/instanceId/flags는 이전 값 유지
-vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT,
-    0, sizeof(mat4), &newMvp);
-// ... 다른 draw ...
-// tint만 갱신
+// 1. 첫 번째 드로우: 행렬과 색상 전체 기록
+vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+    0, sizeof(PerDrawData), &pushBlock);
+vkCmdDraw(cmd, vertexCount, 1, 0, 0);
+
+// 2. 두 번째 드로우: 변환 행렬은 유지하고 오프셋 64의 색상(vec4)만 변경
+glm::vec4 newColor(0.0f, 1.0f, 0.0f, 1.0f);
 vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT,
-    64, sizeof(vec4), &newTint);  // 64 = mvp 직후 오프셋
+    64, sizeof(glm::vec4), &newColor);
+vkCmdDraw(cmd, vertexCount, 1, 0, 0);
 ```
 
-> **스펙 원문 (VUID-vkCmdPushConstants-offset-01795)** For each byte in the range specified by `offset` and `size` and for each shader stage in `stageFlags`, there must be a push constant range in layout that includes that byte and that stage.
->> 갱신 영역이 **레이아웃에 선언된 range를 완전히 포함**해야 함. 일부만 덮으면 안 됨.
+> **스펙 발췌 (VUID-vkCmdPushConstants-offset-01796)** 지정한 `stageFlags`는 갱신 대상 바이트 범위와 겹치는 모든 파이프라인 레이아웃 범위의 `stageFlags`를 완전히 포함해야 한다. 예를 들어 레이아웃에 `VERTEX | FRAGMENT`로 정의된 범위를 갱신할 때 `stageFlags`에 `VERTEX`만 넘기면 밸리데이션 오류가 발생한다.
 
-> **스펙 원문 (VUID-vkCmdPushConstants-offset-01796)** For each byte ... and for each push constant range that overlaps that byte, `stageFlags` must include all stages in that push constant range's `VkPushConstantRange::stageFlags`.
->> stageFlags는 겹치는 **모든 range의 stageFlags를 포함**해야 함. 한 range가 VS+FS로 선언됐는데 `stageFlags=VS`만 주면 무효.
+> **커맨드 버퍼 초기 상태 주의** 커맨드 버퍼 기록을 시작할 때 푸시 상수 공간의 내용은 **정의되지 않은(Undefined) 상태**다. 셰이더가 해당 값을 읽기 전에 반드시 `vkCmdPushConstants`를 호출하여 유효한 값을 채워 넣어야 한다.
 
-> **스펙 원문** "When a command buffer begins recording, all push constant values are undefined. Reads of undefined push constant values by the executing shader return undefined values."
->> 커맨드 버퍼 시작 시 push constant는 **모두 undefined**. **파이프라인 바인딩 전**에 반드시 `vkCmdPushConstants`로 초기화해야 함.
+### 4.2. `vkCmdPushConstants2` (Vulkan 1.4 / `VK_KHR_maintenance6`)
 
-### 4.2. `vkCmdPushConstants2` / `VkPushConstantsInfo` (1.4 / `VK_KHR_maintenance6`)
-
-Vulkan 1.4에 추가된 변형. 파라미터를 `VkPushConstantsInfo` 구조체로 받는다.
+Vulkan 1.4 코어 및 `VK_KHR_maintenance6`에서는 매개변수를 `VkPushConstantsInfo` 구조체로 캡슐화한 확장 함수를 제공한다.
 
 ```c
-// 1.4+
-VkPushConstantsInfo info{};
-info.sType      = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO;
-info.layout     = layout;
-info.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-info.offset     = 0;
-info.size       = sizeof(pc);
-info.pValues    = &pc;
-vkCmdPushConstants2(cmd, &info);
+VkPushConstantsInfo pushInfo{};
+pushInfo.sType      = VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO;
+pushInfo.layout     = pipelineLayout;
+pushInfo.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+pushInfo.offset     = 0;
+pushInfo.size       = sizeof(PerDrawData);
+pushInfo.pValues    = &pushBlock;
+
+vkCmdPushConstants2(cmd, &pushInfo);
 ```
 
-**`vkCmdPushConstants`와 차이:**
-
-- **기능은 동일**. 결과, 제약, 알 수 있는 VUID 모두 같음.
-- **왜 존재하나**: 구조체 기반이라 미래에 새 필드가 추가되어도 함수 시그니처를 깨지 않고 pNext에 확장 가능. 1.4 표준화 + `VK_KHR_maintenance6` 시점부터 권장.
-- **추가 옵션**: `dynamicPipelineLayout` feature가 켜져 있으면 `layout = VK_NULL_HANDLE`로 두고 pNext에 `VkPipelineLayoutCreateInfo`를 체이닝해 **레이아웃 자체를 동적 생성** 가능.
-- **선택 기준**:
-  - 1.3 이하 디바이스만 타깃 → `vkCmdPushConstants`
-  - 1.4+ 또는 `VK_KHR_maintenance6` 지원 타깃 → `vkCmdPushConstants2` 권장
+- 기능과 제약 조건은 기존 `vkCmdPushConstants`와 동일하다.
+- `dynamicPipelineLayout` 기능 사용 시 `layout = VK_NULL_HANDLE`로 두고 pNext 체인에 `VkPipelineLayoutCreateInfo`를 연결하여 레이아웃을 동적으로 넘길 수 있다.
 
 ---
 
-## 5. 동적 디스크립터 오프셋 vs Push Constant
+## 5. 푸시 상수 vs 동적 오프셋 UBO 비교
 
-둘 다 "디스패치/draw 마다 바뀌는 작은 값"을 위한 메커니즘이지만, **성능/유연성이 다름**.
-
-| 특성 | Push Constant | Dynamic UBO Offset | Dynamic SSBO Offset |
-|------|---------------|--------------------|--------------------|
-| 최대 크기 | 128~256 B (한계) | 64KB (UBO당), 풀은 `maxUniformBufferRange` × `maxDescriptorSet` | 훨씬 큼 |
-| 메모리 백드 | 없음 (GPU 레지스터) | UBO 필요 | SSBO 필요 |
-| 업데이트 명령 | `vkCmdPushConstants` (단순 memcpy) | `vkCmdBindDescriptorSets` + dynamic offset | 동일 |
-| 인스턴스/드로우 단위 갱신 | 매우 빠름 (의도된 fast path) | 약간 더 느림 (디스크립터 갱신) | 비슷 |
-| 여러 draw 공유 | 같은 layout 안에서는 명시적 재push 필요 | 같은 set 재바인딩 | 동일 |
-| 셰이더 입력 | `layout(push_constant) uniform` | `layout(set=X, binding=Y) uniform UBO` | 동일 |
-
-**선택 가이드:**
-
-- **수 바이트 ~ 64 바이트 단일 상수** (MVP 행렬, 색, 인스턴스 ID, 머티리얼 ID) → push constant
-- **수십 ~ 수백 바이트 가변 데이터** (per-instance 배열, 가변 인덱스 테이블) → dynamic UBO offset
-- **셰이더가 큰 데이터셋을 인덱싱** → SSBO + dynamic offset
-- **여러 draw 사이 공유 가능한 작은 상수** → 인라인 유니폼 블록 (`VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK`)
+| 비교 항목 | 푸시 상수 (Push Constants) | 동적 오프셋 UBO |
+|-----------|---------------------------|-----------------------|
+| **용량 한계** | 128 ~ 256 바이트 | 코어 1.0 보장 최소 16 KB, 1.4/Roadmap 2022 보장 64 KB (`maxUniformBufferRange`) |
+| **백킹 메모리** | 없음 (커맨드 스트림 및 GPU 레지스터) | `VkBuffer` + `VkDeviceMemory` 필요 |
+| **갱신 API** | `vkCmdPushConstants` (메모리 복사) | `vkCmdBindDescriptorSets` (바이트 오프셋 지정) |
+| **갱신 오버헤드** | 극히 낮음 (소량 데이터 즉시 기록) | 상대적으로 낮음 (디스크립터 바인딩 테이블 갱신) |
+| **여러 드로우 공유** | 명시적으로 다시 푸시하지 않으면 유지 | 동적 오프셋 변경 시 매 드로우 `vkCmdBindDescriptorSets` + `pDynamicOffsets` 필요 |
+| **적합한 데이터** | 드로우별 MVP 행렬, 틴트 색상, 인스턴스 인덱스 | 뼈대 애니메이션 행렬 배열, 조명 파라미터 테이블 |
 
 ---
 
-## 6. 전형적 패턴
+## 6. 대표 활용 패턴
 
-### 6.1. Per-draw MVP
+### 6.1. 드로우별 MVP 변환 행렬
 
 ```c
-// 파이프라인 레이아웃 (한 번)
-VkPushConstantRange pc{};
-pc.size       = sizeof(glm::mat4);
-pc.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-vkCreatePipelineLayout(device, plciWithPc, nullptr, &layout);
-
-// 매 draw
-vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &mvp);
-vkCmdDraw(cmd, vc, 1, 0, 0);
+VkPushConstantRange range{ VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4) };
+// ... 레이아웃 생성 ...
+vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &modelViewProj);
+vkCmdDraw(cmd, count, 1, 0, 0);
 ```
 
-### 6.2. 멀티 range — VS/FS 분리
+### 6.2. 스테이지 분리 (버텍스 행렬 + 프래그먼트 파라미터)
 
 ```c
 VkPushConstantRange ranges[2] = {
-    {0,  sizeof(mat4), VK_SHADER_STAGE_VERTEX_BIT},                              // MVP (VS only)
-    {64, sizeof(vec4),  VK_SHADER_STAGE_FRAGMENT_BIT},                            // tint (FS only)
+    { VK_SHADER_STAGE_VERTEX_BIT,   0,  64 },  // mat4 mvp (0~63바이트)
+    { VK_SHADER_STAGE_FRAGMENT_BIT, 64, 16 }   // vec4 materialProps (64~79바이트)
 };
-// 총 80 바이트 사용
 ```
 
-VS는 0~63, FS는 64~79 영역만 보게 됨. 셰이더 측에서도 동일하게 두 블록으로 나눠 받음.
+버텍스 셰이더는 0~63바이트, 프래그먼트 셰이더는 64~79바이트만 소비하므로 레지스터 공간을 효율적으로 분할할 수 있다.
 
-### 6.3. Per-instance 데이터 — indirect draw와 함께
+### 6.3. 컴퓨트 디스패치 파티션 오프셋
 
-```c
-// InstanceID를 push constant로 (인스턴스마다 다른 값)
-// 또는: VK_KHR_shader_object + draw mesh task에서 push constant
-vkCmdPushConstants(cmd, layout, VS, 0, sizeof(uint32_t), &instanceBaseId);
-vkCmdDraw(cmd, vcPerInstance, instanceCount, 0, instanceBaseId);
+```glsl
+layout(push_constant) uniform ComputeParams {
+    uint baseIndex;
+    uint elementCount;
+    float deltaTime;
+} params;
 ```
 
-### 6.4. 시간/프레임 정보
-
-```c
-struct FramePC {
-    float time;            // 0
-    float deltaTime;       // 4
-    uint32_t frameNumber;  // 8
-    uint32_t flags;        // 12
-    // 16 바이트
-};
-vkCmdPushConstants(cmd, layout, ALL_STAGES, 0, sizeof(FramePC), &framePC);
-```
-
-### 6.5. Compute dispatch — workgroup별 시작 오프셋
-
-```c
-// GLSL
-layout(push_constant) uniform PC {
-    uint baseInstance;
-    uint workGroupShift;
-    float time;
-} pc;
-
-// C
-vkCmdPushConstants(cmd, layout,
-    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) * 2 + sizeof(float),
-    &(struct { uint base; uint shift; float t; }){ instanceBase, wgShift, time });
-vkCmdDispatch(cmd, wgCountX, 1, 1);
-```
-
-**장점**: dispatch마다 다른 partition을 처리해야 하는 파티클/GPU culling 등 compute 파이프라인에서 매번 UBO를 새로 만들 필요 없이 push로 전달.
+GPU 컬링이나 파티클 시뮬레이션 시 매 디스패치마다 작업 영역 오프셋을 버퍼 없이 가볍게 전달한다.
 
 ---
 
-## 7. `VkPushConstantBankInfoNV` (NV push constant bank, 선택)
+## 7. 자주 발생하는 오류 점검 목록
 
-`VK_NV_push_constant_bank` 확장은 **하나의 range를 여러 bank로 분할**해 부분 갱신. `VkPushConstantsInfo::pNext`에 체이닝.
+### 7.1. 크기 및 정렬 오류
 
-```c
-VkPushConstantBankInfoNV bank{};
-bank.sType = VK_STRUCTURE_TYPE_PUSH_CONSTANT_BANK_INFO_NV;
-bank.bank = 0;  // 어느 bank
-info.pNext = &bank;
-```
+- [ ] `offset` 또는 `size`가 4의 배수가 아님 (VUID-vkCmdPushConstants-offset-00368, size-00369).
+- [ ] `offset + size`가 디바이스의 `maxPushConstantsSize`를 초과 (VUID-vkCmdPushConstants-size-00371).
+- [ ] `size == 0`으로 호출 (VUID-vkCmdPushConstants-size-arraylength).
+- [ ] C++ 구조체 멤버 정렬이 GLSL std430 정렬(16바이트 경계)과 맞지 않아 데이터가 밀리는 현상.
 
-대부분의 경우 불필요. 표준 push constant로 충분.
+### 7.2. 범위 및 스테이지 불일치
 
----
+- [ ] `vkCmdPushConstants` 호출 시 전달한 `stageFlags`가 레이아웃에 등록된 해당 영역의 스테이지를 누락 (VUID-offset-01796).
+- [ ] 파이프라인 레이아웃에 등록되지 않은 오프셋 영역에 데이터를 기록하려 시도 (VUID-offset-01795).
+- [ ] 셰이더 코드에는 `layout(push_constant)` 블록이 없는데 불필요하게 `vkCmdPushConstants` 호출.
 
-## 8. 자주 빠지는 주의사항 모음
+### 7.3. 파이프라인 전환 및 상태 유지 오류
 
-### 8.1. 크기/정렬
+- [ ] 커맨드 버퍼 시작 후 첫 드로우 전에 푸시 상수를 기록하지 않아 쓰레기값이 셰이더로 유입.
+- [ ] 서로 다른 파이프라인 레이아웃을 가진 파이프라인 A에서 B로 전환할 때, 푸시 상수 영역이 호환되지 않는데 재기록을 생략.
+- [ ] 세컨더리 커맨드 버퍼 안에서 프라이머리 커맨드 버퍼의 푸시 상수 상태가 자동으로 상속된다고 오인.
 
-- [ ] `offset`이 4의 배수가 아님 (VUID-vkCmdPushConstants-offset-00368).
-- [ ] `size`가 4의 배수가 아님 (VUID-vkCmdPushConstants-size-00369).
-- [ ] `offset >= maxPushConstantsSize` (VUID-vkCmdPushConstants-offset-00370).
-- [ ] `offset + size > maxPushConstantsSize` (VUID-vkCmdPushConstants-size-00371).
-- [ ] `size == 0` (VUID-vkCmdPushConstants-size-arraylength).
+### 7.4. 용량 초과 남용
 
-### 8.2. range / stage 매칭
-
-- [ ] `vkCmdPushConstants`의 stageFlags가 겹치는 range의 stageFlags를 **모두 포함**하지 않음 (VUID-offset-01796).
-- [ ] 갱신 영역(`offset`+`size`)이 **레이아웃의 어떤 range에도** 완전히 포함되지 않음 (VUID-offset-01795).
-- [ ] 같은 오프셋이 두 range에 걸쳐 있고 stageFlags가 다른데 한쪽 stageFlags만 지정.
-- [ ] range의 size가 셰이더의 `push_constant` 블록 크기보다 작음 → 셰이더가 일부 못 읽음.
-
-### 8.3. 초기화 / 파이프라인 바인딩
-
-- [ ] **파이프라인 바인딩 전** push constant 갱신 누락 → 셰이더가 undefined 값 읽음.
-- [ ] 파이프라인 A 바인딩 후 push constant 갱신 → **파이프라인 B** 바인딩. B가 바인딩되어도 push constant 값은 **재설정되지 않고 그대로 유지**. B의 동일 오프셋 영역에 A의 값이 그대로 남아 예상치 못한 동작 발생 가능.
-- [ ] 같은 layout의 다른 range에 push constant 갱신 안 해서 이전 draw의 값이 남아 있음.
-- [ ] secondary command buffer에서 push constant 갱신 후 primary에서 draw → secondary에는 `VkCommandBufferInheritanceRenderingInfo` 같은 inheritance 설정 없으면 일관성 깨질 수 있음.
-
-### 8.4. secondary / inheritance
-
-- [ ] secondary command buffer에 `VkCommandBufferInheritanceDescriptorHeapInfoEXT` 추가하고 push constants 무관 시 push 안 됨 (VUID-vkCmdPushConstants-commandBuffer-11295/11296).
-- [ ] secondary에서 push 한 값이 primary의 push constant와 충돌 (Vulkan은 secondary 시작 시 push constant를 어떻게 다룸 — spec 확인 필요).
-
-### 8.5. 큐 / stage
-
-- [ ] video coding scope 안에서 `vkCmdPushConstants` 호출 (VUID-vkCmdPushConstants-videocoding).
-- [ ] `stageFlags == 0` (VUID-stageFlags-requiredbitmask).
-- [ ] `stageFlags`에 디바이스에 없는 shader stage 포함 (예: `TESSELLATION_CONTROL_BIT`인데 tessellation feature 비활성).
-- [ ] compute 큐인데 `stageFlags = GRAPHICS_BIT`만 — 정상 (compute는 안 받음). 단 그 range 자체가 compute에서 무용.
-
-### 8.6. 일반 / 실전
-
-- [ ] push constant로 **큰 데이터**(수 KB) 넘기려고 함. 한계 초과. **UBO + dynamic offset**으로 가야 함.
-- [ ] push constant를 **descriptor set 업데이트 대용**으로 사용 → 호환되는 파이프라인만 묶일 수 있어 위험.
-- [ ] 셰이더가 `push_constant` 블록이 없는데 `vkCmdPushConstants` 호출 → **쓰긴 쓰지만** 셰이더가 안 읽음. 무효 동작.
-- [ ] `vkCmdBindPipeline` 호출 후 `vkCmdPushConstants` 순서 — 일반적으로 **bind → push → draw**. 반대로 해도 값은 적용되지만 pipeline layout이 바뀌면 호환성 문제.
-- [ ] 멀티 스레드에서 동시에 push constant 갱신 (command buffer는 외부 동기화 필요).
-- [ ] `vkCmdPushConstants2`/`VkPushConstantsInfo`에 `layout = VK_NULL_HANDLE`인데 `dynamicPipelineLayout` feature 비활성 (VUID-VkPushConstantsInfo-None-09495).
-- [ ] `VkPushConstantsInfo`에 `layout`이 `VK_NULL_HANDLE`인데 pNext에 `VkPipelineLayoutCreateInfo` 없음 (VUID-VkPushConstantsInfo-layout-09496).
-
----
-
-## 9. 빠른 참조
-
-| 의도 | 권장 |
-|------|------|
-| MVP/뷰 행렬 (per draw) | push constant VS, 64~128 B |
-| 머티리얼 ID + per-instance ID | push constant VS or VS+FS, 4~16 B |
-| 가변 인덱스 테이블 (per draw) | dynamic UBO offset |
-| 큰 메쉬 데이터 (per draw) | SSBO + dynamic offset |
-| 공유 셰이더 상수 (여러 draw) | 인라인 유니폼 블록 |
-| 시간/프레임 정보 | push constant ALL_STAGES, 16 B |
-| 머티리얼별 파라미터 블록 | descriptor set (UBO) |
-
-| 한계 | 값 (보통) |
-|------|----------|
-| `maxPushConstantsSize` | 128~256 바이트 |
-| 한 draw당 push cost | 한 자릿수 µs 미만 |
-| 갱신 단위 | 4 바이트 정렬 |
-| 갱신 명령 | 커맨드 버퍼에 기록 (draw 전) |
+- [ ] 수 킬로바이트에 달하는 스켈레탈 본 행렬 배열이나 복잡한 머티리얼 구조체를 푸시 상수로 밀어 넣으려다 실패 (UBO 또는 SSBO로 전환 권장).

@@ -5,24 +5,22 @@ slug: graphics-pipeline
 
 ## 소개
 
-Vulkan의 그래픽스 파이프라인(VkGraphicsPipeline)은 셰이더 단계와 고정 함수 단계를 **명시적으로 조립**해서 만든다. `VkGraphicsPipelineCreateInfo` 하나에 필요한 모든 상태를 한꺼번에 전달해야 하며, OpenGL처럼 중간에 상태를 바꾸는 방식이 아니다.
+Vulkan의 그래픽스 파이프라인(`VkGraphicsPipeline`)은 셰이더 단계와 고정 함수 단계를 명시적으로 결합해 생성한다. `VkGraphicsPipelineCreateInfo` 구조체에 렌더링에 필요한 모든 상태를 한 번에 전달해야 하며, 런타임에 글로벌 상태를 빈번하게 변경하던 기존 API(OpenGL 등)와 구조적으로 다르다.
 
-> **왜 이렇게 복잡할까?** OpenGL은 "현재 상태"를 바꾸는 방식이라 유연했지만, 드라이버가 매번 상태를 확인해야 해서 성능이 떨어졌다. Vulkan은 "모든 상태를 한 번에 선언"하는 방식으로, GPU가 미리 최적화할 수 있게 한다. 처음엔 복잡해도 한번 만들어두면 재사용할 수 있다.
+> [!NOTE]
+> **파이프라인 상태 객체(PSO)의 도입 배경**  
+> 과거 그래픽스 API는 드로우 호출 직전까지 개별 상태 변경을 허용했기 때문에, 드라이버가 매 드로우마다 상태 조합의 유효성을 검증하고 셰이더를 재컴파일해야 했다. Vulkan은 모든 렌더링 상태를 파이프라인 상태 객체(PSO)로 사전에 선언하도록 강제하여, 드라이버가 하드웨어 최적화 바이너리를 미리 생성하고 런타임 검증 부하를 최소화하도록 설계되었다.
 
-> **용어 정리**
-> - **고정 함수 유닛(FFU)**: 프로그래머가 제어할 수 없는 GPU 내부 단계 (래스터화, 블렌딩 등)
-> - **프로그래머블 셰이더**: 개발자가 코드를 작성하는 단계 (버텍스, 프래그먼트 등)
-> - **파이프라인 상태 객체(PSO)**: 파이프라인 설정을 묶은 객체. 한 번 만들면 변경 불가
+### 주요 용어
+- **고정 함수 유닛(FFU)**: 래스터화, 깊이·스텐실 테스트, 블렌딩 등 GPU 하드웨어에 고정된 연산 단계
+- **프로그래머블 셰이더**: 버텍스, 테셀레이션, 지오메트리, 프래그먼트 등 개발자가 작성한 SPIR-V 코드가 실행되는 단계
+- **파이프라인 상태 객체(PSO)**: 셰이더와 고정 함수 설정을 하나로 묶은 불변(Immutable) 객체
 
 ---
 
+## 1. 파이프라인 구조
 
-
-## 1. 파이프라인의 구조 (요약)
-
-Vulkan 그래픽스 파이프라인은 다음과 같은 **고정 함수 유닛(FFU)** 과 **프로그래머블 셰이더**의 조합이다.
-
-> **흐름 이해**: 버텍스 버퍼 → 정점 처리 → 래스터화(삼각형을 픽셀로) → 프래그먼트 처리 → 색상 출력. 이 흐름을 따라가면서 각 단계가 어떻게 설정되는지 보면 이해하기 쉽다.
+Vulkan 그래픽스 파이프라인은 정점 입력부터 최종 프레임버퍼 출력까지 프로그래머블 셰이더와 고정 함수 단계를 순차적으로 거친다.
 
 ```flowchart
 flowchart TD
@@ -44,18 +42,16 @@ flowchart TD
   A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L --> M --> N --> O
 ```
 
-스펙(10.4. Graphics Pipelines)은 이 상태들을 4개의 **논리적 그룹**으로 나눈다:
+Vulkan 명세(10.4. Graphics Pipelines)는 이 상태들을 4개의 논리적 그룹으로 분류한다.
 
-| 그룹 | 포함 상태 | 비고 |
+| 그룹 | 포함 상태 | 역할 |
 |------|---------|------|
-| **Vertex Input State** | VertexInput + InputAssembly | 버텍스 데이터를 어떻게 읽을지 |
-| **Pre-rasterization Shader State** | VS/TCS/TES/GS + Tessellation + Viewport + Rasterization | 래스터화 전 모든 것 |
-| **Fragment Shader State** | Fragment Shader | FS만 |
-| **Fragment Output State** | ColorBlend (attachments) + DepthStencil | 프래그먼트 출력 |
+| **Vertex Input State** | VertexInput, InputAssembly | 정점 버퍼 메모리 바인딩 및 프리미티브 토폴로지 구성 |
+| **Pre-rasterization Shader State** | VS, TCS, TES, GS, Tessellation, Viewport, Rasterization | 래스터화 이전 지오메트리 처리와 래스터화 방식 결정 |
+| **Fragment Shader State** | Fragment Shader | 프래그먼트 셰이더 코드 및 인터페이스 |
+| **Fragment Output State** | ColorBlend, DepthStencil, Multisample | 프래그먼트 테스트, 픽셀 블렌딩, MSAA, 최종 어테치먼트 출력 |
 
 ---
-
-
 
 ## 2. `VkGraphicsPipelineCreateInfo` 구조체
 
@@ -83,108 +79,112 @@ typedef struct VkGraphicsPipelineCreateInfo {
 } VkGraphicsPipelineCreateInfo;
 ```
 
-**핵심 포인트:**
-- `pVertexInputState` / `pInputAssemblyState` 등 각 포인터는 **NULL이 될 수 있음** (`VK_DYNAMIC_STATE_*`으로 동적 상태로 만들면 실제 값은 나중에 설정)
-- `renderPass` + `subpass`: 어떤 render pass의 어떤 subpass에서 사용될지 지정. 파이프라인은 이 render pass와 호환되는 프레임버퍼에서만 사용 가능.
-- `layout`: descriptor set layout + push constant range
+### 핵심 필드 설명
+- **상태 구조체 포인터**: `pVertexInputState`, `pViewportState` 등은 특정 조건에서만 `NULL`로 지정할 수 있다. `pViewportState`는 `VK_EXT_extended_dynamic_state3` + `VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT`·`SCISSOR_WITH_COUNT` 동시 설정 시에만 NULL 가능하고, `pVertexInputState`는 `VK_DYNAMIC_STATE_VERTEX_INPUT_EXT` 활성화 시, `pRasterizationState`는 extended_dynamic_state3 + 8개 래스터화 동적 상태 전부가 필요하다. 단순히 `VK_DYNAMIC_STATE_VIEWPORT`만으로는 생략할 수 없다.
+- `renderPass` 및 `subpass`: 파이프라인이 바인딩될 렌더 패스와 서브패스 인덱스를 지정한다. 파이프라인은 이 렌더 패스와 호환(compatible)되는 프레임버퍼 또는 동적 렌더링(Dynamic Rendering) 환경에서만 실행할 수 있다.
+- `layout`: 셰이더가 접근할 디스크립터 세트 레이아웃과 푸시 상수 범위를 정의한 `VkPipelineLayout` 핸들이다.
 
 ---
 
+## 3. Vertex Input State (정점 입력)
 
+정점 버퍼의 메모리 레이아웃과 셰이더 입력 속성(`location`) 간의 연결 방식을 정의한다.
 
-## 3. Vertex Input State (버텍스 입력)
+### 3.1. Vertex Input Binding (버퍼 → 정점 스트림)
 
-두 가지 구조체로 구성된다.
-
-> **용도** GPU는 "버퍼의 어디부터 어디까지가 어떤 데이터인지" 알아야 한다. Vertex Input State는 "이 버퍼의 0바이트부터 position이고, 12바이트부터 normal이다"라고 알려주는 설정이다.
-
-### 3.1. Vertex Input Binding (버퍼 → 버텍스 스트림)
+정점 버퍼의 슬롯 번호와 정점 간의 메모리 간격을 설정한다.
 
 ```c
 VkVertexInputBindingDescription bindings[2] = {};
-bindings[0].binding = 0;              // binding slot 0
-bindings[0].stride = sizeof(Vertex);   // 정점 하나당 바이트
-bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX; // per-vertex
+bindings[0].binding = 0;                              // 바인딩 슬롯 0
+bindings[0].stride = sizeof(Vertex);                  // 정점 1개당 바이트 크기
+bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;  // 정점 단위 갱신
 
-bindings[1].binding = 1;
-bindings[1].stride = sizeof(InstanceData);
-bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE; // per-instance
+bindings[1].binding = 1;                              // 바인딩 슬롯 1
+bindings[1].stride = sizeof(InstanceData);            // 인스턴스 1개당 바이트 크기
+bindings[1].inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;// 인스턴스 단위 갱신 (인스턴싱)
 ```
 
 `inputRate`:
-- `VK_VERTEX_INPUT_RATE_VERTEX`: 매 정점마다 다음 속성으로 이동
-- `VK_VERTEX_INPUT_RATE_INSTANCE`: 매 인스턴스마다 다음 속성으로 이동 (instancing)
+- `VK_VERTEX_INPUT_RATE_VERTEX`: 각 정점을 그릴 때마다 다음 데이터로 진행
+- `VK_VERTEX_INPUT_RATE_INSTANCE`: 각 인스턴스를 그릴 때마다 다음 데이터로 진행
 
-### 3.2. Vertex Input Attribute (버퍼 내 위치 → 셰이더 location)
+### 3.2. Vertex Input Attribute (버퍼 오프셋 → 셰이더 location)
+
+버퍼 내부의 특정 필드를 셰이더의 `layout(location = N)` 변수에 매핑한다.
 
 ```c
 VkVertexInputAttributeDescription attributes[3] = {};
-attributes[0].location = 0;               // shader의 layout(location = 0)
-attributes[0].binding = 0;                // binding slot 0
-attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3
+attributes[0].location = 0;                           // 셰이더 layout(location = 0)
+attributes[0].binding = 0;                            // 바인딩 슬롯 0 참조
+attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;    // 32비트 부동소수점 3개 (vec3)
 attributes[0].offset = offsetof(Vertex, pos);
 
-attributes[1].location = 1;
+attributes[1].location = 1;                           // layout(location = 1)
 attributes[1].binding = 0;
-attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT; // vec3 (normal)
+attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;    // vec3 (법선)
 attributes[1].offset = offsetof(Vertex, normal);
 
-attributes[2].location = 2;
-attributes[2].binding = 1;
-attributes[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; // vec4 (instance color)
+attributes[2].location = 2;                           // layout(location = 2)
+attributes[2].binding = 1;                            // 바인딩 슬롯 1 (인스턴스 데이터)
+attributes[2].format = VK_FORMAT_R32G32B32A32_SFLOAT; // vec4 (인스턴스 색상)
 attributes[2].offset = offsetof(InstanceData, color);
 ```
 
-**셰이더 측:**
+**GLSL 버텍스 셰이더 대응:**
 ```glsl
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;
-layout(location = 2) in vec4 inInstanceColor; // per-instance
+layout(location = 2) in vec4 inInstanceColor; // 인스턴스 속성
 ```
 
-**중요:** `VkVertexInputAttributeDescription::format`은 **GPU가 버퍼에서 읽는 형식**을 지정한다. 셰이더에서 `vec3`로 받을 거라면 `R32G32B32_SFLOAT`으로 설정한다. 64비트 컴포넌트(R64G64_SFLOAT 등)가 있으면 해당 location에서 사용하지 않는 컴포넌트가 없어야 한다 (스펙 VUID).
+> [!IMPORTANT]
+> `format`은 GPU가 버퍼 메모리에서 읽어 들일 형식을 지정한다. 셰이더에서 `vec3`로 받더라도 메모리에 16비트 반정밀도 부동소수점으로 저장되어 있다면 `VK_FORMAT_R16G16B16_SFLOAT`를 지정해야 정상적으로 변환된다. 64비트 컴포넌트(`dvec2`, `R64G64_SFLOAT` 등)는 **location 2개를 소비**하므로, 다음 속성의 location 번호가 자동으로 2만큼 건너뛴다.
 
-### 3.3. Input Assembly (정점 → 삼각형)
+### 3.3. Input Assembly (기본 도형 조립)
+
+정점들을 어떠한 프리미티브 기하 형태로 묶을지 지정한다.
 
 ```c
 VkPipelineInputAssemblyStateCreateInfo iaCI{};
+iaCI.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 iaCI.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 iaCI.primitiveRestartEnable = VK_FALSE;
 ```
 
-`topology` 옵션:
-| 값 | 의미 |
-|-----|------|
-| `POINT_LIST` | 점 |
-| `LINE_LIST` / `LINE_STRIP` | 선 |
-| `TRIANGLE_LIST` / `TRIANGLE_STRIP` / `TRIANGLE_FAN` | 삼각형 |
-| `TRIANGLE_LIST_WITH_ADJACENCY` 등 | 인접 정보 포함 (GS용) |
-| `PATCH_LIST` | 테셀레이션용 (patchControlPoints 설정 필요) |
+| 토폴로지 | 의미 |
+|---------|------|
+| `VK_PRIMITIVE_TOPOLOGY_POINT_LIST` | 독립된 점 목록 |
+| `VK_PRIMITIVE_TOPOLOGY_LINE_LIST` / `LINE_STRIP` | 선 목록 또는 연결된 선 스트립 |
+| `VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST` / `STRIP` / `FAN` | 삼각형 목록, 스트립, 팬 |
+| `VK_PRIMITIVE_TOPOLOGY_*_WITH_ADJACENCY` | 인접 정점 정보를 포함하는 형태 (지오메트리 셰이더 전용) |
+| `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST` | 테셀레이션 제어점에 매핑되는 패치 형태 |
 
 ---
 
-
-
 ## 4. Tessellation State (테셀레이션)
 
-테셀레이션을 사용하려면 `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`를 지정하고, `VkPipelineTessellationStateCreateInfo`를 설정한다.
+테셀레이션을 활성화하려면 토폴로지를 `VK_PRIMITIVE_TOPOLOGY_PATCH_LIST`로 설정하고 `VkPipelineTessellationStateCreateInfo`를 지정한다.
 
 ```c
 VkPipelineTessellationStateCreateInfo tessCI{};
+tessCI.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
 tessCI.patchControlPoints = 3; // 패치당 제어점 개수
 ```
 
-셰이더 측에서는 TCS(Tessellation Control Shader)와 TES(Tessellation Evaluation Shader)가 필요하다.
+셰이더 단계에서는 TCS(Tessellation Control Shader)와 TES(Tessellation Evaluation Shader)를 함께 파이프라인에 연결한다.
 
 ```glsl
-// TCS: 출력 테셀레이션 레벨 지정
+// TCS: 패치 분할 수준(Tessellation Level) 결정
 layout(vertices = 3) out;
 void main() {
-    gl_TessLevelOuter[0] = gl_TessLevelOuter[1] = gl_TessLevelOuter[2] = 4.0;
+    gl_TessLevelOuter[0] = 4.0;
+    gl_TessLevelOuter[1] = 4.0;
+    gl_TessLevelOuter[2] = 4.0;
     gl_TessLevelInner[0] = 4.0;
 }
 
-// TES: 테셀레이션된 좌표에서 최종 위치 계산
+// TES: 생성된 도메인 좌표를 바탕으로 정점 위치 산출
 layout(triangles, equal_spacing, cw) in;
 void main() {
     gl_Position = gl_in[0].gl_Position * gl_TessCoord.x
@@ -195,70 +195,70 @@ void main() {
 
 ---
 
+## 5. Viewport State (뷰포트 및 시저)
 
-
-## 5. Viewport State (뷰포트와 가위)
+정규화 디바이스 좌표(NDC)를 프레임버퍼 픽셀 좌표로 변환하는 뷰포트와 렌더링 영역을 제한하는 시저(Scissor) 사각형을 설정한다.
 
 ```c
 VkViewport viewport{};
-viewport.x = 0; viewport.y = 0;
-viewport.width = 1920; viewport.height = 1080;
-viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+viewport.x = 0.0f;
+viewport.y = 0.0f;
+viewport.width = 1920.0f;
+viewport.height = 1080.0f;
+viewport.minDepth = 0.0f;
+viewport.maxDepth = 1.0f;
 
 VkRect2D scissor{};
 scissor.offset = {0, 0};
 scissor.extent = {1920, 1080};
 
 VkPipelineViewportStateCreateInfo vpCI{};
+vpCI.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 vpCI.viewportCount = 1;
 vpCI.pViewports = &viewport;
 vpCI.scissorCount = 1;
 vpCI.pScissors = &scissor;
 ```
 
-**동적 상태 사용:** `pViewports`와 `pScissors` 대신 `pDynamicState`에 `VK_DYNAMIC_STATE_VIEWPORT`와 `VK_DYNAMIC_STATE_SCISSOR`를 추가하면, `vkCmdSetViewport` / `vkCmdSetScissor`로 런타임에 설정 가능. 멀티뷰포트도 지원한다.
+> [!TIP]
+> 화면 크기 변경 시 파이프라인을 재생성하지 않으려면 `VkPipelineDynamicStateCreateInfo`에 `VK_DYNAMIC_STATE_VIEWPORT`와 `VK_DYNAMIC_STATE_SCISSOR`를 등록한다. 이후 커맨드 버퍼 기록 시 `vkCmdSetViewport`와 `vkCmdSetScissor`를 호출하여 동적으로 값을 설정할 수 있다.
 
 ---
-
-
 
 ## 6. Rasterization State (래스터화)
 
-래스터화는 **삼각형을 픽셀(프래그먼트)로 변환**하는 단계다.
-
-> **핵심 개념**: GPU는 정점 3개로 삼각형을 그리지만, 실제 화면은 픽셀의 격자다. 래스터화는 "이 삼각형이 어떤 픽셀을 덮는지"를 결정하는 과정이다.
+기하학적 프리미티브를 화면 격자상의 프래그먼트로 변환하는 단계를 제어한다.
 
 ```c
 VkPipelineRasterizationStateCreateInfo rsCI{};
-rsCI.depthClampEnable = VK_FALSE;     // 깊이 클램핑 (Near/Far 밖도 허용)
-rsCI.rasterizerDiscardEnable = VK_FALSE; // true면 프래그먼트 안 만듦
-rsCI.polygonMode = VK_POLYGON_MODE_FILL; // FILL, LINE, POINT
-rsCI.cullMode = VK_CULL_MODE_BACK_BIT;   // CULL_NONE, FRONT, BACK, FRONT_AND_BACK
-rsCI.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; // CCW / CW
+rsCI.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+rsCI.depthClampEnable = VK_FALSE;                  // 깊이 클램핑 (Near/Far 평면 밖 클램핑 여부)
+rsCI.rasterizerDiscardEnable = VK_FALSE;           // VK_TRUE면 프래그먼트를 생성하지 않음
+rsCI.polygonMode = VK_POLYGON_MODE_FILL;           // FILL, LINE, POINT
+rsCI.cullMode = VK_CULL_MODE_BACK_BIT;             // 백페이스 컬링
+rsCI.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;  // 반시계방향(CCW)을 전면으로 판정
 rsCI.depthBiasEnable = VK_FALSE;
-rsCI.depthBiasConstantFactor = 0.0f;
-rsCI.depthBiasClamp = 0.0f;
-rsCI.depthBiasSlopeFactor = 0.0f;
+rsCI.depthBiasConstantFactor = 0.0f;   // 깊이 바이어스 상수 오프셋
+rsCI.depthBiasClamp = 0.0f;            // 바이어스 클램핑 범위
+rsCI.depthBiasSlopeFactor = 0.0f;      // 폴리곤 슬로프 기반 바이어스 계수
 rsCI.lineWidth = 1.0f;
 ```
 
-**핵심 필드:**
-- `rasterizerDiscardEnable`: `VK_TRUE`면 래스터화 자체를 생략. Depth pass 최적화 등에 사용. 이 값이 `VK_TRUE`면 `ViewportState`, `Multisample`, `DepthStencil`, `ColorBlend`는 필요하지 않음.
-- `polygonMode`: `VK_POLYGON_MODE_FILL`이 기본. `LINE`은 와이어프레임, `POINT`는 점. `LINE` / `POINT`는 `fillModeNonSolid` feature 필요.
-- `cullMode`: 뒷면 컬링. `VK_CULL_MODE_NONE`이면 양면 모두 그림.
-- `frontFace`: `CCW` / `CW`. 정점 순서에 따라 앞면 결정.
+### 핵심 필드
+- `rasterizerDiscardEnable`: `VK_TRUE`로 설정하면 래스터화 단계를 건너뛰고 프래그먼트를 생성하지 않는다. 변환 피드백이나 지오메트리 연산 결과만 기록하는 패스에서 사용하며, 이 경우 뷰포트, 멀티샘플, 깊이·스텐실, 컬러 블렌드 상태 포인터를 생략할 수 있다.
+- `polygonMode`: 기본값은 `VK_POLYGON_MODE_FILL`이다. `LINE`(와이어프레임)이나 `POINT`를 사용하려면 `VkPhysicalDeviceFeatures::fillModeNonSolid` 피처를 활성화해야 한다.
+- `depthClampEnable`: `VK_TRUE`로 설정하면 Near/Far 평면을 벗어난 프래그먼트를 폐기(Clip)하지 않고 [0, 1] 깊이 경계로 고정(Clamp)한다. 그림자 맵 렌더링 등에서 캡 누락을 방지할 때 유용하다.
 
 ---
 
-
-
 ## 7. Multisample State (MSAA)
 
-MSAA(Multisample Anti-Aliasing)는 **기하학적 경계에서의 계단 현상을 줄이는 기법**이다.
+멀티샘플링 안티앨리어싱(MSAA) 설정을 구성하여 기하 경계면의 계단 현상을 완화한다.
 
 ```c
 VkPipelineMultisampleStateCreateInfo msCI{};
-msCI.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT; // 1, 2, 4, 8
+msCI.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+msCI.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT; // 픽셀당 샘플 수 (1, 2, 4, 8 등)
 msCI.sampleShadingEnable = VK_FALSE;
 msCI.minSampleShading = 1.0f;
 msCI.pSampleMask = nullptr;
@@ -266,140 +266,100 @@ msCI.alphaToCoverageEnable = VK_FALSE;
 msCI.alphaToOneEnable = VK_FALSE;
 ```
 
-- `rasterizationSamples`: `VK_SAMPLE_COUNT_1_BIT`이면 MSAA 없음
-### 7.1. Sample Shading (= SSAA)
+### 7.1. Sample Shading (샘플 셰이딩)
 
-`sampleShadingEnable = VK_TRUE`를 켜면 **Fragment Shader가 픽셀당 한 번이 아니라, 샘플당 한 번씩 실행**된다. 이는 **SSAA(Super-Sampling Anti-Aliasing)** 와 동일한 원리다.
+`sampleShadingEnable`을 `VK_TRUE`로 활성화하려면 `VkPhysicalDeviceFeatures::sampleRateShading` 피처가 필요하다(VUID-VkPipelineMultisampleStateCreateInfo-sampleShadingEnable-00784). 활성화 시 프래그먼트 셰이더를 픽셀 단위가 아닌 개별 서브픽셀 샘플 위치에서 실행한다. SSAA와 유사한 효과를 내지만, SSAA는 전체 렌더 타깃을 고해상도로 렌더링하는 것이고 Sample Shading은 MSAA 프레임버퍼 내에서 프래그먼트 실행 빈도만 높이는 점이 다르다.
 
 ```c
-// MSAA만: FS는 픽셀당 1번, 결과를 4개 샘플에 복제
-msCI.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
-msCI.sampleShadingEnable = VK_FALSE;  // 기본값: FS per-pixel
-
-// Sample Shading = SSAA: FS가 샘플당 1번씩 실행
+// Sample Shading 활성화 설정
 msCI.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
 msCI.sampleShadingEnable = VK_TRUE;
-msCI.minSampleShading = 1.0f;  // 모든 샘플에 대해 FS 실행
+msCI.minSampleShading = 1.0f; // 1.0f: 모든 샘플에 대해 프래그먼트 셰이더 개별 실행
 ```
 
-**동작 방식:**
+| 모드 | 프래그먼트 셰이더 실행 주기 | 계산 위치 | 적용 효과 |
+|------|------------------------|----------|----------|
+| **MSAA 기본** | 픽셀당 1회 | 픽셀 중심점 | 기하 경계면만 안티앨리어싱 |
+| **Sample Shading (0.25)** | 픽셀당 1~4회 가변 | 서브픽셀 샘플 위치 | 중간 수준 품질 |
+| **Sample Shading (1.0)** | 샘플 수만큼 실행 (4회) | 각 서브픽셀 샘플 위치 | 텍스처 앨리어싱 완화 (완전한 SSAA) |
 
-| 모드 | FS 실행 횟수 | 각 FS의 위치 | 효과 |
-|------|------------|------------|------|
-| MSAA only | 1회/픽셀 | 픽셀 중심 (고정) | 기하 경계만 안티앨리어싱 |
-| Sample Shading = 0.25 | 1~4회/픽셀 | 일부 샘플 위치 | 중간 품질 |
-| Sample Shading = 1.0 | N회/픽셀 (N = 샘플 수) | **각 샘플 위치** | **완전한 SSAA** |
-
-`minSampleShading = 1.0f` + `rasterizationSamples = VK_SAMPLE_COUNT_4_BIT`이면 FS가 픽셀당 **4번** 실행된다. 각 실행은 서로 다른 샘플 위치에서 계산되므로, 텍스처의 서브픽셀 디테일까지 샘플링되어 **셰이더 기반 안티앨리어싱**이 적용된다.
-
-**SSAA와 동일한 이유:**
-- 일반 SSAA는 내부 해상도를 2x/4x로 높여 렌더링한 후 다운샘플링
-- Sample Shading은 같은 일을 하지만, 래스터화 해상도는 그대로 두고 FS만 여러 번 실행
-- 결과적으로 **픽셀 내부의 서브픽셀 위치에서 셰이딩**하여, 알파 테스트나 텍스처 패턴의 aliasing도 줄여줌
-
-### 7.2. 성능 손실
-
-Sample Shading의 가장 큰 단점은 **FS 실행 횟수가 샘플 수만큼 증가**한다는 점이다.
-
-```
-MSAA only:  FS = 1회/픽셀  → 성능 저하 거의 없음 (기하만)
-SSAA 2x:    FS = 2회/픽셀  → 셰이더 부하 2배
-SSAA 4x:    FS = 4회/픽셀  → 셰이더 부하 4배
-SSAA 8x:    FS = 8회/픽셀  → 셰이더 부하 8배
-```
-
-특히:
-- **픽셀 셰이더가 무거울수록 타격이 큼** (디퍼드 셰이딩, PBR 등)
-- 메모리 대역폭도 증가 (GBuffer 쓰기가 N배)
-- 전성비 관점에서는 차라리 해상도를 낮추고 TAA를 쓰는 편이 나을 수 있음
+### 7.2. 성능 고려사항
+Sample Shading은 프래그먼트 셰이더 호출 횟수가 샘플 배수만큼 선형적으로 증가한다.
+- 4x 샘플 셰이딩 사용 시 픽셀 셰이더 연산 부하가 최대 4배까지 증가한다.
+- PBR이나 디퍼드 셰이딩처럼 프래그먼트 연산 비용이 높은 파이프라인에서는 성능 저하가 크므로, 모바일이나 저전력 환경에서는 TAA 등 대체 기법을 검토해야 한다.
 
 ---
 
+## 8. Depth/Stencil State (깊이 및 스텐실)
 
-
-## 8. Depth/Stencil State
+프래그먼트의 깊이 비교 연산과 스텐실 버퍼 마스킹 규칙을 설정한다.
 
 ```c
 VkPipelineDepthStencilStateCreateInfo dsCI{};
-dsCI.depthTestEnable = VK_TRUE;
-dsCI.depthWriteEnable = VK_TRUE;
-dsCI.depthCompareOp = VK_COMPARE_OP_LESS;     // 깊이 비교 연산
+dsCI.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+dsCI.depthTestEnable = VK_TRUE;               // 깊이 테스트 활성화
+dsCI.depthWriteEnable = VK_TRUE;              // 깊이 버퍼 쓰기 활성화
+dsCI.depthCompareOp = VK_COMPARE_OP_LESS;     // 기존 값보다 작을 때 통과
 dsCI.depthBoundsTestEnable = VK_FALSE;
 dsCI.stencilTestEnable = VK_FALSE;
 
-// 스텐실 프론트/백 별도 설정
+// 전면 및 후면 스텐실 연산 설정
 dsCI.front.failOp = VK_STENCIL_OP_KEEP;
 dsCI.front.passOp = VK_STENCIL_OP_REPLACE;
+dsCI.front.depthFailOp = VK_STENCIL_OP_KEEP;
 dsCI.front.compareOp = VK_COMPARE_OP_ALWAYS;
+dsCI.front.compareMask = 0xFF;
+dsCI.front.writeMask = 0xFF;
 dsCI.front.reference = 1;
-dsCI.front.compareMask = 0xff;
-dsCI.front.writeMask = 0xff;
-// back은 front와 동일한 내용
 dsCI.back = dsCI.front;
 ```
 
-스텐실이 있는 경우: `stencilTestEnable = VK_TRUE`, 그리고 프론트/백 각각에 대해 `failOp`, `passOp`, `depthFailOp`, `compareOp`, `reference`, `compareMask`, `writeMask`를 지정한다.
-
 ---
 
+## 9. Color Blend State (색상 혼합)
 
-
-## 9. Color Blend State
-
-Color Blend는 **새로 그린 색상과 기존 색상을 어떻게 섞을지** 결정한다.
+새로 생성된 프래그먼트 색상과 기존 컬러 어태치먼트의 픽셀 색상을 합성하는 방식을 정의한다.
 
 ```c
-// 각 attachment별 blend 설정
-VkPipelineColorBlendAttachmentState blendAttachments[2] = {};
-
-// Attachment 0: 일반 blend (alpha blending)
+VkPipelineColorBlendAttachmentState blendAttachments[1] = {};
 blendAttachments[0].blendEnable = VK_TRUE;
+
+// 색상 채널 블렌딩: (srcColor * srcAlpha) + (dstColor * (1 - srcAlpha))
 blendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
 blendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
 blendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+
+// 알파 채널 블렌딩
 blendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
 blendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
 blendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+
 blendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT
                                    | VK_COLOR_COMPONENT_G_BIT
                                    | VK_COLOR_COMPONENT_B_BIT
                                    | VK_COLOR_COMPONENT_A_BIT;
 
-// Attachment 1: 덧셈 blend (additive)
-blendAttachments[1].blendEnable = VK_TRUE;
-blendAttachments[1].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-blendAttachments[1].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-blendAttachments[1].colorBlendOp = VK_BLEND_OP_ADD;
-blendAttachments[1].colorWriteMask = 0xF;
-
 VkPipelineColorBlendStateCreateInfo cbCI{};
+cbCI.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 cbCI.logicOpEnable = VK_FALSE;
 cbCI.logicOp = VK_LOGIC_OP_COPY;
-cbCI.attachmentCount = 2;
+cbCI.attachmentCount = 1;
 cbCI.pAttachments = blendAttachments;
-cbCI.blendConstants[0] = 1.0f;
-cbCI.blendConstants[1] = 1.0f;
-cbCI.blendConstants[2] = 1.0f;
-cbCI.blendConstants[3] = 1.0f;
 ```
 
-**Blend 방정식:**
-```
-finalColor.rgb = (srcColorBlendFactor × srcColor) colorBlendOp (dstColorBlendFactor × dstColor)
-finalColor.a   = (srcAlphaBlendFactor × srcAlpha) alphaBlendOp (dstAlphaBlendFactor × dstAlpha)
-```
+### 블렌딩 공식
+$$\text{finalColor.rgb} = (\text{srcColorBlendFactor} \times \text{srcColor}) \;\text{colorBlendOp}\; (\text{dstColorBlendFactor} \times \text{dstColor})$$
+$$\text{finalColor.a} = (\text{srcAlphaBlendFactor} \times \text{srcAlpha}) \;\text{alphaBlendOp}\; (\text{dstAlphaBlendFactor} \times \text{dstAlpha})$$
 
-**LogicOp:** `logicOpEnable = VK_TRUE`면 블렌딩 대신 **비트 논리 연산** (`VK_LOGIC_OP_COPY`, `VK_LOGIC_OP_XOR`, `VK_LOGIC_OP_AND` 등 16종)을 컬러 어태치먼트에 적용한다. 논리 연산은 정수형 컬러 포맷(`*UINT`/`*SINT`)에서만 동작하며, 부동소수점 포맷에는 쓸 수 없다. `blendEnable`과 `logicOpEnable`을 동시에 켜는 건 무효다.
-
-`colorWriteMask`로 각 채널별 쓰기 허용/금지를 제어할 수 있다.
+> [!NOTE]
+> **LogicOp(논리 연산)**  
+> `logicOpEnable`을 `VK_TRUE`로 설정하면 비트 논리 연산(`VK_LOGIC_OP_COPY`, `VK_LOGIC_OP_XOR` 등 16종)을 컬러 어테치먼트에 적용한다. 논리 연산은 부호 있거나 없는 정수형 또는 정규화 정수형 포맷에서만 동작하며, 부동소수점·sRGB 포맷에서는 값이 그대로 통과한다. `blendEnable`과 `logicOpEnable`을 동시에 켜면 블렌딩은 무시되고 논리 연산만 적용된다(오류 아님).
 
 ---
 
+## 10. Dynamic State (동적 상태)
 
-
-## 10. Dynamic State
-
-파이프라인을 만들 때 설정을 고정하면, 나중에 바꿀 수 없다. **Dynamic State**로 선언하면 드로우 중에 값을 바꿀 수 있다.
+파이프라인 생성 시 설정을 고정하지 않고 커맨드 버퍼 기록 시점에 동적으로 덮어쓸 상태들을 지정한다.
 
 ```c
 VkDynamicState dynamicStates[] = {
@@ -408,96 +368,79 @@ VkDynamicState dynamicStates[] = {
     VK_DYNAMIC_STATE_LINE_WIDTH,
     VK_DYNAMIC_STATE_DEPTH_BIAS,
     VK_DYNAMIC_STATE_BLEND_CONSTANTS,
-    VK_DYNAMIC_STATE_DEPTH_BOUNDS,
-    VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-    VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
     VK_DYNAMIC_STATE_STENCIL_REFERENCE,
 };
 
 VkPipelineDynamicStateCreateInfo dynCI{};
-dynCI.dynamicStateCount = 9;
+dynCI.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+dynCI.dynamicStateCount = sizeof(dynamicStates) / sizeof(dynamicStates[0]);
 dynCI.pDynamicStates = dynamicStates;
 ```
 
-동적 상태로 만들면 파이프라인 생성 시 해당 포인터를 `NULL`로 비워둘 수 있고, 드로우 전에 `vkCmdSet*` 명령으로 값을 설정한다.
-
-`VK_EXT_extended_dynamic_state` (Vulkan 1.3 core)와 `VK_EXT_extended_dynamic_state3`가 추가되면서, **거의 모든 상태를 동적으로 설정**할 수 있게 되었다. 예를 들어 `VK_DYNAMIC_STATE_VERTEX_INPUT_EXT`를 사용하면 `VkPipelineVertexInputStateCreateInfo`조차 파이프라인에서 생략 가능하다.
+동적 상태로 등록한 항목은 `vkCmdSetViewport`, `vkCmdSetScissor` 등의 명령으로 드로우 전에 호출하여 변경할 수 있다. Vulkan 1.3 코어에 포함된 확장(`VK_EXT_extended_dynamic_state` 등)을 활용하면 래스터라이저, 깊이 테스트, 정점 입력 바인딩까지 거의 모든 상태를 런타임에 동적으로 변경할 수 있다.
 
 ---
 
+## 11. Shader Stages (셰이더 스테이지)
 
-
-## 11. Shader Stages
-
-셰이더 모듈을 `VkShaderModule`로 로드하고, 각 단계를 `VkPipelineShaderStageCreateInfo`로 파이프라인에 연결한다.
+SPIR-V 셰이더 모듈을 연결하고 진입점(Entry Point)과 특수화 상수(Specialization Constants)를 설정한다.
 
 ```c
-// 셰이더 모듈 생성
-VkShaderModule vsModule, fsModule;
-vkCreateShaderModule(device, &moduleCI, nullptr, &vsModule);
-vkCreateShaderModule(device, &moduleCI, nullptr, &fsModule);
-
-// 스테이지 배열
 VkPipelineShaderStageCreateInfo stages[2] = {};
+
+// 버텍스 셰이더 스테이지
+stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
 stages[0].module = vsModule;
-stages[0].pName = "main";  // entry point
+stages[0].pName = "main";
 
-// Specialization Constants (파이프라인 생성 시 셰이더 상수 오버라이드)
+// 특수화 상수: 컴파일 시점 상수를 파이프라인 생성 시점에 주입
 VkSpecializationMapEntry specEntry{};
 specEntry.constantID = 0;
 specEntry.offset = 0;
 specEntry.size = sizeof(int);
-int specData = 256;
+
+int maxLightsValue = 128;
 VkSpecializationInfo specInfo{};
 specInfo.mapEntryCount = 1;
 specInfo.pMapEntries = &specEntry;
 specInfo.dataSize = sizeof(int);
-specInfo.pData = &specData;
+specInfo.pData = &maxLightsValue;
 
+// 프래그먼트 셰이더 스테이지
+stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 stages[1].module = fsModule;
 stages[1].pName = "main";
-stages[1].pSpecializationInfo = &specInfo; // 선택사항
+stages[1].pSpecializationInfo = &specInfo;
 ```
 
-**Specialization Constants:** 셰이더 컴파일 타임 상수값을 파이프라인 생성 시점에 결정할 수 있다. 같은 SPIR-V로 여러 파이프라인 배리언트를 만들 때 유용하다.
-
-```glsl
-// GLSL 셰이더에서
-layout(constant_id = 0) const int MAX_LIGHTS = 128;
-void main() {
-    for (int i = 0; i < MAX_LIGHTS; i++) { ... }
-}
-```
+특수화 상수를 사용하면 동일한 SPIR-V 바이너리를 유지하면서 루프 언롤링, 분기 제거 등 하드웨어 최적화가 적용된 다수의 특화 파이프라인 변형을 효율적으로 컴파일할 수 있다.
 
 ---
 
+## 12. Pipeline Cache (파이프라인 캐시)
 
-
-## 12. Pipeline Cache
-
-파이프라인 생성은 무거운 연산이다. `VkPipelineCache`로 결과를 캐싱할 수 있다.
+파이프라인 컴파일은 많은 CPU 시간을 소모한다. `VkPipelineCache`를 전달하면 컴파일 결과를 캐싱하고 디스크에 직렬화하여 다음 실행 시 재활용할 수 있다.
 
 ```c
 VkPipelineCacheCreateInfo cacheCI{};
+cacheCI.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
 VkPipelineCache pipelineCache;
 vkCreatePipelineCache(device, &cacheCI, nullptr, &pipelineCache);
 
-// 생성 시 cache 전달
+// 파이프라인 생성 시 캐시 객체 전달
 vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline);
 
-// 다음 실행을 위해 cache 데이터를 파일로 저장
-size_t dataSize;
+// 다음 실행을 위해 캐시 데이터를 추출하여 파일로 저장
+size_t dataSize = 0;
 vkGetPipelineCacheData(device, pipelineCache, &dataSize, nullptr);
-void* data = malloc(dataSize);
-vkGetPipelineCacheData(device, pipelineCache, &dataSize, data);
-// file write...
+std::vector<char> cacheData(dataSize);
+vkGetPipelineCacheData(device, pipelineCache, &dataSize, cacheData.data());
 ```
 
 ---
-
-
 
 ## 13. 전체 파이프라인 생성 예제
 
@@ -508,7 +451,7 @@ pipelineCI.stageCount = 2;
 pipelineCI.pStages = stages;
 pipelineCI.pVertexInputState = &vertexInputCI;
 pipelineCI.pInputAssemblyState = &iaCI;
-pipelineCI.pTessellationState = nullptr;  // 사용 안할 때
+pipelineCI.pTessellationState = nullptr; // 테셀레이션 미사용 시 NULL
 pipelineCI.pViewportState = &vpCI;
 pipelineCI.pRasterizationState = &rsCI;
 pipelineCI.pMultisampleState = &msCI;
@@ -520,9 +463,8 @@ pipelineCI.renderPass = renderPass;
 pipelineCI.subpass = 0;
 
 VkPipeline pipeline;
-vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline);
+VkResult result = vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineCI, nullptr, &pipeline);
+if (result != VK_SUCCESS) {
+    // 파이프라인 생성 실패 예외 처리
+}
 ```
-
----
-
-

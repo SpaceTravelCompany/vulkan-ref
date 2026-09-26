@@ -5,18 +5,17 @@ slug: extensions-foundation
 
 ## Summary
 
-Vulkan 1.3~1.4 및 Roadmap 2024/2026 기준으로 **현대 렌더링 엔진에 거의 필수적인 확장기능**을 선별했다.
-성능 향상, 파이프라인 간소화, 새로운 렌더링 패러다임 위주로 20개를 선정하고,
-각각의 활성화 방법과 사용 패턴을 상세히 정리한다.
+Vulkan 1.3~1.4 및 Roadmap 2024/2026을 기준으로 **최신 렌더링 엔진에 필수적인 핵심 확장**을 선별했다.
+성능 향상, 파이프라인 간소화, 새로운 렌더링 패러다임(바인드리스, 동적 렌더링 등)을 중심으로 활성화 방법과 실무 사용 패턴을 정리한다.
 
 ---
 
 ## 선별 기준
 
-1. **Vulkan 1.3/1.4 코어 승격** — 대부분의 최신 GPU가 지원
-2. **Roadmap 2024/2026 필수** — 업계 표준으로 인정
-3. **성능 직접 향상** — CPU 오버헤드 감소, GPU 효율 개선
-4. **새로운 기능 패러다임** — 바인드리스, 메시 셰이딩, 동적 렌더링 등
+1. **Vulkan 1.3/1.4 코어 승격**: 대다수 최신 GPU에서 기본 지원
+2. **Roadmap 2024/2026 필수 규격**: 산업 표준으로 안착
+3. **직접적인 성능 향상**: CPU 오버헤드 감소 및 GPU 실행 효율 개선
+4. **새로운 렌더링 패러다임**: 바인드리스 리소스, 메시 셰이딩, 동적 렌더링 지원
 
 ---
 
@@ -26,15 +25,15 @@ Vulkan 1.3~1.4 및 Roadmap 2024/2026 기준으로 **현대 렌더링 엔진에 �
 
 ### 용도
 
-- `VkRenderPass`, `VkFramebuffer` 객체 생성이 **전면 불필요**
-- 렌더 타겟을 명령 버퍼 기록 시점에 직접 지정
-- 파이프라인 생성이 간소화 (렌더패스 호환성 검사 제거)
-- 현대 엔진 (Frostbite, Unreal Engine 5)의 표준 렌더링 방식
+- `VkRenderPass` 및 `VkFramebuffer` 객체 생성을 전면 생략
+- 렌더 타깃을 커맨드 버퍼 기록 시점에 직접 지정
+- 파이프라인 생성 간소화 (렌더 패스 호환성 검사 불필요)
+- 최신 상용 엔진(Frostbite, Unreal Engine 5 등)의 표준 렌더링 파이프라인
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
-- `VK_KHR_depth_stencil_resolve` 또는 Vulkan 1.2
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
+- `VK_KHR_depth_stencil_resolve` (또는 Vulkan 1.2 이상)
 
 ### 구조체
 
@@ -77,7 +76,8 @@ VkPhysicalDeviceDynamicRenderingFeatures dynamicRenderingFeatures = {
     .dynamicRendering = VK_TRUE,
 };
 
-// 2. 파이프라인 생성 시VkPipelineRenderingCreateInfo pipelineRenderingInfo = {
+// 2. 파이프라인 생성 시 동적 렌더링 정보 설정
+VkPipelineRenderingCreateInfo pipelineRenderingInfo = {
     .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
     .colorAttachmentCount = 1,
     .pColorAttachmentFormats = &colorFormat,
@@ -105,18 +105,18 @@ VkRenderingInfo renderingInfo = {
 };
 
 vkCmdBeginRendering(commandBuffer, &renderingInfo);
-// ... 드로우 명령 ...
+// ... 드로우 명령 기록 ...
 vkCmdEndRendering(commandBuffer);
 ```
 
-### 구 RenderPass 대비 장점
+### 기존 RenderPass 방식과의 비교
 
-| 항목 | RenderPass | Dynamic Rendering |
-|------|-----------|-------------------|
-| 객체 생성 | `VkRenderPass` + `VkFramebuffer` 필요 | 불필요 |
-| 파이프라인 호환성 | Subpass 호환성 검사 필요 | 포맷만 일치하면 됨 |
-| 멀티 커맨드버퍼 | Secondary 필요 | Primary에서 직접 분기 가능 |
-| 런타임 변경 | 불가 | 매 프레임 변경 가능 |
+| 항목 | 기존 VkRenderPass | VK_KHR_dynamic_rendering |
+|------|-------------------|--------------------------|
+| 사전 객체 생성 | `VkRenderPass`, `VkFramebuffer` 필요 | 불필요 |
+| 파이프라인 호환성 | 서브패스 호환성 검증 필요 | 첨부 포맷만 일치하면 동작 |
+| 세컨더리 커맨드 버퍼 | 상속 정보 구조 복잡 | Primary에서 직접 분기 가능 |
+| 런타임 타깃 변경 | 불가 (렌더 패스 재생성 필요) | 매 프레임 동적 지정 가능 |
 
 ---
 
@@ -126,15 +126,15 @@ vkCmdEndRendering(commandBuffer);
 
 ### 용도
 
-- **64비트** 파이프라인 스테이지/액세스 마스크 (32비트 한계 돌파)
-- 배리어와 이벤트가 **하나의 구조체** (`VkDependencyInfo`)로 통합
-- 스테이지 마스크를 배리어 **개별 요소**에 지정 (정밀한 동기화)
-- `VK_PIPELINE_STAGE_2_NONE`으로 불필요한 동기 제거
-- 레이 트레이싱, 메시 셰이더 등 새 스테이지 지원
+- 파이프라인 스테이지 및 접근 마스크를 64비트로 확장 (32비트 플래그 한계 해결)
+- 메모리·버퍼·이미지 배리어와 이벤트를 단일 구조체(`VkDependencyInfo`)로 통합
+- 파이프라인 스테이지를 배리어 개별 항목마다 독립 지정하여 불필요한 실행 지연 최소화
+- `VK_PIPELINE_STAGE_2_NONE` 도입으로 불필요한 동기화 단계 제거
+- 레이 트레이싱, 메시 셰이더 등 신규 스테이지 지원
 
 ### 의존성
 
-- Vulkan 1.0 이상
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
 
 ### 핵심 구조체
 
@@ -154,10 +154,10 @@ typedef struct VkDependencyInfo {
 typedef struct VkMemoryBarrier2 {
     VkStructureType           sType;
     const void*               pNext;
-    VkPipelineStageFlags2     srcStageMask;     // 64비트!
-    VkAccessFlags2            srcAccessMask;    // 64비트!
-    VkPipelineStageFlags2     dstStageMask;     // 64비트!
-    VkAccessFlags2            dstAccessMask;    // 64비트!
+    VkPipelineStageFlags2     srcStageMask;     // 64비트 마스크
+    VkAccessFlags2            srcAccessMask;    // 64비트 마스크
+    VkPipelineStageFlags2     dstStageMask;     // 64비트 마스크
+    VkAccessFlags2            dstAccessMask;    // 64비트 마스크
 } VkMemoryBarrier2;
 
 typedef struct VkImageMemoryBarrier2 {
@@ -207,32 +207,33 @@ VkDependencyInfo depInfo = {
 vkCmdPipelineBarrier2(commandBuffer, &depInfo);
 ```
 
-### 구 API 대비 장점
+### 기존 API 대비 장점
 
 | 항목 | vkCmdPipelineBarrier (1.0) | vkCmdPipelineBarrier2 (1.3) |
 |------|---------------------------|----------------------------|
-| 스테이지 마스크 | 32비트 (전역) | 64비트 (배리어별) |
-| 접근 마스크 | 32비트 (전역) | 64비트 (배리어별) |
-| 구조체 수 | 3종 (memory/buffer/image) | 1종 (VkDependencyInfo) |
-| 새 스테이지 | 미지원 | RT, 메시 셰이더 등 지원 |
+| 스테이지 마스크 | 32비트 (전역 적용) | 64비트 (배리어 단위 지정) |
+| 접근 마스크 | 32비트 (전역 적용) | 64비트 (배리어 단위 지정) |
+| 구조체 개수 | 3종 (memory/buffer/image) | 1종 (`VkDependencyInfo`) 통합 |
+| 최신 파이프라인 스테이지 | 미지원 | RT, 메시 셰이더 등 전체 지원 |
 
 ---
 
 ## 3. VK_EXT_descriptor_indexing — 바인드리스 디스크립터
 
-> **Vulkan 1.2 코어 승격 | 현대 엔진 필수**
+> **Vulkan 1.2 코어 승격 | 최신 렌더링 엔진 필수**
 
 ### 용도
 
-- **바인드리스 리소스**: 배열 인덱스로 셰이더에서 직접 리소스 접근
-- **Update After Bind**: 디스크립터 세트 바인딩 후에도 디스크립터 업데이트 가능
-- **Partially Bound**: 일부 슬롯이 비어있어도 사용 가능 (희소 배열)
-- **Variable Count**: 가변 크기 디스크립터 배열
-- D3D12 Descriptor Heap과 동등한 기능
+- **바인드리스 리소스(Bindless Resources)**: 셰이더 내부에서 인덱스로 대규모 리소스 배열에 직접 접근
+- **Update After Bind**: 커맨드 버퍼에 디스크립터 세트를 바인딩한 후에도 디스크립터 갱신 가능
+- **Partially Bound**: 일부 슬롯이 비어 있어도 셰이더가 실제 참조하지 않는다면 유효 판정 (희소 배열 지원)
+- **Variable Count**: 런타임에 크기가 결정되는 가변 크기 디스크립터 배열 지원
+- Direct3D 12의 디스크립터 힙(Descriptor Heap)과 대등한 유연성 제공
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` + `VK_KHR_maintenance3` 또는 Vulkan 1.1
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
+- `VK_KHR_maintenance3` (또는 Vulkan 1.1 이상)
 
 ### 핵심 기능 플래그
 
@@ -244,19 +245,32 @@ typedef struct VkPhysicalDeviceDescriptorIndexingFeatures {
     VkBool32 descriptorBindingSampledImageUpdateAfterBind;  // 바인딩 후 업데이트
     VkBool32 descriptorBindingStorageBufferUpdateAfterBind;
     VkBool32 descriptorBindingUpdateUnusedWhilePending;     // 사용 중 업데이트
-    VkBool32 descriptorBindingPartiallyBound;               // 부분 바인딩
-    VkBool32 descriptorBindingVariableDescriptorCount;      // 가변 크기
-    VkBool32 runtimeDescriptorArray;                        // 런타임 배열
+    VkBool32 descriptorBindingPartiallyBound;               // 부분 바인딩 허용
+    VkBool32 descriptorBindingVariableDescriptorCount;      // 가변 크기 배열
+    VkBool32 runtimeDescriptorArray;                        // 런타임 배열 크기 선언
 } VkPhysicalDeviceDescriptorIndexingFeatures;
 ```
 
 ### 사용 방법
 
 ```c
+// 0. 피처 조회 및 활성화 (디바이스 생성 시)
+VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
+descriptorIndexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+
+VkPhysicalDeviceFeatures2 features2{};
+features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+features2.pNext = &descriptorIndexingFeatures;
+vkGetPhysicalDeviceFeatures2(physicalDevice, &features2);
+
+// 디바이스 생성 시 pNext에 체이닝하여 활성화
+// descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
+// descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
+
 // 1. 디스크립터 세트 레이아웃 생성 (Update After Bind)
 VkDescriptorSetLayoutBinding bindings[] = {
     { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-      .descriptorCount = 10000,  // 대규모 배열
+      .descriptorCount = 10000,  // 대규모 텍스처 배열
       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT },
 };
 
@@ -280,7 +294,7 @@ VkDescriptorSetLayoutCreateInfo layoutInfo = {
     .pBindings = bindings,
 };
 
-// 2. 디스크립터 풀 (Update After Bind)
+// 2. 디스크립터 풀 (Update After Bind 지원 플래그 지정)
 VkDescriptorPoolCreateInfo poolInfo = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
     .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
@@ -289,9 +303,11 @@ VkDescriptorPoolCreateInfo poolInfo = {
 
 // 3. 셰이더에서 사용 (GLSL)
 /*
+#extension GL_EXT_nonuniform_qualifier : require
+
 layout(set = 0, binding = 0) uniform texture2D textures[];
 
-// 비균일 인덱스로 접근
+// 비균일 인덱스로 직접 접근
 void main() {
     int idx = objectData[drawId].textureIndex;
     color = texture(sampler2D(textures[nonuniformEXT(idx)], linearSampler), uv);
@@ -299,39 +315,39 @@ void main() {
 */
 ```
 
-### 바인드리스 패턴 요약
+### 바인드리스 구조 요약
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Descriptor Set 0 (전역, 프레임당 1회 바인딩)      │
-│  ┌───────────────────────────────────────────┐  │
-│  │ binding 0: texture2D textures[10000]      │  │
-│  │ binding 1: sampler samplers[16]           │  │
-│  │ binding 2: StorageBuffer sceneData[]      │  │
-│  └───────────────────────────────────────────┘  │
-│                                                 │
-│  셰이더: textures[objectId] 로 직접 접근         │
-│  → draw call 마다 디스크립터 바인딩 불필요        │
-└─────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  Descriptor Set 0 (전역 리소스 테이블, 프레임당 1회 바인딩) │
+│  ┌──────────────────────────────────────────────────┐  │
+│  │ binding 0: texture2D textures[10000]             │  │
+│  │ binding 1: sampler samplers[16]                  │  │
+│  │ binding 2: StorageBuffer sceneData[]             │  │
+│  └──────────────────────────────────────────────────┘  │
+│                                                        │
+│  셰이더: textures[objectId]로 동적 직접 접근              │
+│  → 드로우 콜마다 디스크립터 세트를 재바인딩할 필요 없음   │
+└────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## 4. VK_KHR_buffer_device_address — 버퍼 장치 주소
 
-> **Vulkan 1.2 코어 승격 | RT/메시 셰이딩 필수 기반**
+> **Vulkan 1.2 코어 승격 | RT 및 메시 셰이딩 필수 기반**
 
 ### 용도
 
-- 버퍼를 **64비트 GPU 주소**로 접근 (포인터처럼 사용)
-- 레이 트레이싱 가속 구조체의 기반
-- 메시 셰이더에서 간접 데이터 접근
-- D3D12 GPU Virtual Address와 동등
-- 디스크립터 없이 버퍼 직접 참조 가능
+- 버퍼 메모리를 64비트 GPU 가상 주소(`VkDeviceAddress`)로 직접 참조(C 포인터처럼 역참조 가능)
+- 하드웨어 가속 레이 트레이싱 가속 구조체(Acceleration Structure)의 핵심 기반
+- 메시 셰이더 및 간접 드로우/디스패치 데이터의 고속 접근 지원
+- 디스크립터 바인딩 없이 푸시 상수나 버퍼 내 포인터만으로 버퍼 직접 참조 가능
+- Direct3D 12의 GPU Virtual Address(GPU VA)와 대등한 기능
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
 
 ### 사용 방법
 
@@ -343,7 +359,7 @@ VkPhysicalDeviceBufferDeviceAddressFeatures bdaFeatures = {
     .bufferDeviceAddressCaptureReplay = VK_FALSE,
 };
 
-// 2. 버퍼 생성 시 플래그 설정
+// 2. 버퍼 생성 시 주소 사용 플래그 지정
 VkBufferCreateInfo bufferInfo = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
     .size = bufferSize,
@@ -351,13 +367,13 @@ VkBufferCreateInfo bufferInfo = {
            | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 };
 
-// 3. 메모리 할당 시 플래그 설정
+// 3. 메모리 할당 시 주소 사용 플래그 지정
 VkMemoryAllocateFlagsInfo allocFlags = {
     .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
     .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
 };
 
-// 4. 주소 조회
+// 4. 장치 가상 주소 조회
 VkBufferDeviceAddressInfo addressInfo = {
     .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
     .buffer = myBuffer,
@@ -366,12 +382,12 @@ VkDeviceAddress address = vkGetBufferDeviceAddress(device, &addressInfo);
 
 // 5. 셰이더에서 사용 (GLSL)
 /*
-layout(buffer_reference) buffer MyData {
+layout(buffer_reference, scalar) buffer MyData {
     uint values[];
 };
 
 layout(push_constant) uniform PushConstants {
-    MyData data;  // 64비트 포인터
+    MyData data;  // 64비트 GPU 주소
 } pc;
 
 void main() {
@@ -384,23 +400,25 @@ void main() {
 
 ## 5. VK_KHR_timeline_semaphore — 타임라인 세마포어
 
-> **Vulkan 1.2 코어 승격 | 멀티스레드/프레임 동기화 필수**
+> **Vulkan 1.2 코어 승격 | 멀티스레드 및 프레임 동기화 표준**
 
 ### 용도
 
-- **이진 세마포어**의 한계 돌파: uint64 카운터 기반
-- CPU에서 직접 signal/wait 가능 (호스트 동기화)
-- **프레임 번호**를 세마포어 값으로 사용 가능
-- GPU 간, CPU-GPU 간 복잡한 동기화를 단순화
-- 파이프라인 렌더링 (CPU가 N프레임 앞서 작업) 패턴에 필수
+- 단발성 이진 세마포어(Binary Semaphore)의 한계를 극복하고 단조 증가하는 64비트 정수 카운터 기반 동기화 제공
+- CPU 호스트에서 직접 신호(Signal) 및 대기(Wait) 가능 (별도 펜스 객체 없이 호스트-디바이스 동기화 통합)
+- 프레임 번호나 작업 타임스탬프를 세마포어 값으로 직접 매핑
+- 여러 큐 간 또는 CPU-GPU 간의 복잡한 비동기 작업 흐름을 단일 원시 객체로 간소화
+- 프레임 파이프라이닝(CPU가 GPU보다 N 프레임 앞서 작업을 준비하는 패턴) 구현에 유용 (펜스+바이너리 세마포어로도 구현 가능)
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
 
 ### 사용 방법
 
 ```c
+// 0. 피처 활성화 (디바이스 생성 시 VkPhysicalDeviceVulkan12Features::timelineSemaphore = VK_TRUE)
+
 // 1. 타임라인 세마포어 생성
 VkSemaphoreTypeCreateInfo typeInfo = {
     .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -419,9 +437,9 @@ vkCreateSemaphore(device, &semInfo, NULL, &timelineSemaphore);
 VkTimelineSemaphoreSubmitInfo timelineInfo = {
     .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
     .waitSemaphoreValueCount = 1,
-    .pWaitSemaphoreValues = (uint64_t[]){ frameNumber - 1 },  // 이전 프레임 대기
+    .pWaitSemaphoreValues = (uint64_t[]){ frameNumber - 1 },  // 이전 프레임 완료 대기
     .signalSemaphoreValueCount = 1,
-    .pSignalSemaphoreValues = (uint64_t[]){ frameNumber },     // 현재 프레임 완료
+    .pSignalSemaphoreValues = (uint64_t[]){ frameNumber },     // 현재 프레임 완료 신호
 };
 
 VkSubmitInfo submitInfo = {
@@ -436,7 +454,7 @@ VkSubmitInfo submitInfo = {
 };
 vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE);
 
-// 3. CPU에서 대기 (특정 프레임 완료까지)
+// 3. CPU 호스트에서 특정 프레임 완료 대기
 VkSemaphoreWaitInfo waitInfo = {
     .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
     .semaphoreCount = 1,
@@ -445,7 +463,7 @@ VkSemaphoreWaitInfo waitInfo = {
 };
 vkWaitSemaphores(device, &waitInfo, UINT64_MAX);
 
-// 4. CPU에서 직접 signal
+// 4. CPU 호스트에서 직접 신호 전달
 VkSemaphoreSignalInfo signalInfo = {
     .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
     .semaphore = timelineSemaphore,
@@ -462,19 +480,21 @@ vkSignalSemaphore(device, &signalInfo);
 
 ### 용도
 
-- 디스크립터 세트 **할당/바인딩 없이** 직접 푸시
-- `vkCmdPushDescriptorSetKHR` 한 번으로 완료
-- 작은 유니폼 버퍼, 상수 데이터에 최적
-- CPU 오버헤드 대폭 감소
+- 디스크립터 풀 할당 및 세트 바인딩 절차 없이 커맨드 버퍼에 디스크립터를 인라인으로 직접 기록
+- `vkCmdPushDescriptorSetKHR` 단일 호출로 셰이더 리소스 갱신 완료
+- 매 프레임 빈번하게 갱신되는 소규모 유니폼 버퍼나 동적 상수 데이터 전달에 최적
+- 디스크립터 풀 관리와 세트 업데이트에 수반되는 CPU 오버헤드 대폭 절감
 
 ### 의존성
 
-- `VK_KHR_get_physical_device_properties2` 또는 Vulkan 1.1
-- `VK_KHR_push_descriptor`는 독립적 (1.0 기반)
+- `VK_KHR_get_physical_device_properties2` (또는 Vulkan 1.1 이상)
 
 ### 사용 방법
 
 ```c
+// 0. 피처 활성화 (디바이스 생성 시 VkPhysicalDevicePushDescriptorFeaturesKHR::pushDescriptor = VK_TRUE)
+//    VUID-VkDescriptorSetLayoutCreateInfo-flags-10354: pushDescriptor 피처 없이 PUSH_DESCRIPTOR_BIT 사용 불가
+
 // 1. 푸시 디스크립터 레이아웃 생성
 VkDescriptorSetLayoutCreateInfo layoutInfo = {
     .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -486,7 +506,7 @@ VkDescriptorSetLayoutCreateInfo layoutInfo = {
     },
 };
 
-// 2. 명령 버퍼에서 직접 푸시
+// 2. 커맨드 버퍼에서 직접 푸시 기록
 VkWriteDescriptorSet write = {
     .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
     .dstBinding = 0,
@@ -499,19 +519,19 @@ vkCmdPushDescriptorSetKHR(
     commandBuffer,
     VK_PIPELINE_BIND_POINT_GRAPHICS,
     pipelineLayout,
-    0,      // set 번호
-    1,      // write 개수
+    0,      // 디스크립터 세트 인덱스
+    1,      // 갱신 항목 수
     &write
 );
-// → vkAllocateDescriptorSets, vkUpdateDescriptorSets, vkCmdBindDescriptorSets 불필요!
+// vkAllocateDescriptorSets, vkUpdateDescriptorSets, vkCmdBindDescriptorSets 호출 불필요
 ```
 
 ---
 
-## 종합: 권장 활성화 순서
+## 종합: 권장 활성화 계층
 
 ```
-1단계 (기본 필수 — Vulkan 1.3):
+1단계: 기본 필수 계층 (Vulkan 1.3 코어 기반)
   ├── VK_KHR_dynamic_rendering
   ├── VK_KHR_synchronization2
   ├── VK_EXT_descriptor_indexing (1.2)
@@ -519,7 +539,7 @@ vkCmdPushDescriptorSetKHR(
   ├── VK_KHR_timeline_semaphore (1.2)
   └── VK_EXT_extended_dynamic_state
 
-2단계 (성능 최적화 — Vulkan 1.4 / Roadmap 2024):
+2단계: 성능 최적화 계층 (Vulkan 1.4 코어 및 Roadmap 2024)
   ├── VK_KHR_push_descriptor
   ├── VK_KHR_maintenance5
   ├── VK_KHR_dynamic_rendering_local_read
@@ -528,14 +548,14 @@ vkCmdPushDescriptorSetKHR(
   ├── VK_KHR_shader_expect_assume
   └── VK_KHR_shader_subgroup_rotate
 
-3단계 (차세대 기능):
+3단계: 차세대 렌더링 패러다임 계층
   ├── VK_EXT_mesh_shader
   ├── VK_EXT_device_generated_commands
   ├── VK_KHR_fragment_shading_rate
   ├── VK_KHR_acceleration_structure + RT Pipeline + Ray Query
   └── VK_EXT_host_image_copy
 
-4단계 (WSI/디버깅):
+4단계: WSI 및 진단 계층
   ├── VK_KHR_swapchain_maintenance1
   ├── VK_EXT_pipeline_creation_cache_control
   └── VK_EXT_debug_utils
