@@ -12,7 +12,7 @@ npm install         # topic-pages 의존성 설치
 npm run build       # dist/ 정적 HTML 생성
 ```
 
-`dist/index.html` 하나로 동작하는 **단일 페이지 앱**이다.
+`dist/index.html`(랜딩) + `dist/topics/<slug>.html`(주제별) + `dist/search-index.json`으로 구성된 **정적 멀티페이지 사이트**다.
 
 서빙은 사용자 환경의 도구로 (VS Code Live Server, `npx serve`, `python -m http.server` 등).
 `content/*.md` 또는 `site.json` 수정 후 `npm run build` 다시 실행 → `dist/` 갱신.
@@ -43,19 +43,23 @@ npm link topic-pages
 
 ## UI
 
-- **왼쪽**: 주제 버튼 (스크롤 없이 클릭으로 전환)
-- **상단**: 섹션 탭 버튼 (`##` 단위, 본문 전체 유지)
-- **본문**: 선택한 섹션만 표시 (`‹` `›` 또는 ← → 키로 이동)
-- 긴 섹션만 본문 영역 내부에서 스크롤 (내용 생략 없음)
+라이트 모드 전용. 글자 크기 버튼은 없고, 브라우저 확대(`Ctrl` + 휠)로 글자와 레이아웃이 함께 커지고 작아진다.
+
+- **랜딩**: 섹션별 주제 카드 (좁은 화면에서는 행 리스트)
+- **왼쪽**: 주제 사이드바 (주제 필터 입력으로 이름·요약 검색, 그룹 접기). 좁은 화면에서는 메뉴 버튼으로 여는 드로어
+- **본문**: 주제 하나가 한 페이지. `##` 단위 섹션이 이어지고 맨 아래에 이전/다음 주제 카드
+- **오른쪽**: 이 페이지 목차 (현재 위치 표시, 맨 위로). 좁은 화면에서는 문서 머리의 접이식 목차 또는 `목차 열기` 드로어
+- **검색**: `Ctrl` + `K` 또는 `/`
 
 ## 사이트 정의 변경
 
 `site.json`에서 다음을 조정한다:
 
 - `title` / `subtitle` — 사이트 이름
-- `brandMark` — nav 좌측 2글자 마크
-- `theme` — CSS 변수 (primary, primaryFg, accent, link)
-- `references` — nav 하단 외부 링크
+- `brandMark` — 헤더 좌측 2글자 마크
+- `theme.accent` — 사이트 액센트 색 (현재 `#63C8C1`). 브랜드 마크·활성 항목·콜아웃 칩 등에 쓰이고 어두운/연한 변형은 자동 파생된다
+- `bodyFont` — 본문 폰트 `"mono"`(기본) | `"sans"`
+- `references` — 푸터의 "참고 자료" 링크
 - `sections` — 주제 그룹과 토픽
 
 ## 콘텐츠 추가
